@@ -5,7 +5,7 @@
 # EXT holds: xpack-arm-none-eabi-gcc-13.3.1-1.1, stm32g0xx_hal_driver, cmsis_device_g0, cmsis-core
 # (the GitHub repositories STMicroelectronics/stm32g0xx_hal_driver, cmsis_device_g0, cmsis-core).
 PLAT   ?= ../cems-platform
-EXT    ?= $(abspath ../ext)
+EXT    ?= ../ext
 ARMCC  ?= $(EXT)/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin/arm-none-eabi-gcc
 HAL     = $(EXT)/stm32g0xx_hal_driver
 DEV     = -DSTM32G0B1xx -DUSE_HAL_DRIVER
