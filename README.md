@@ -20,6 +20,7 @@ reference this firmware is compared against byte for byte.
 | `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
 | `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, DIP switch, straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
 | `tools/at02.py` | AT-02 conformance test for a real board, from a PC (below). |
+| `tools/at13.py` | AT-13 digital input bench test, from a PC (below). |
 | `tests/` | Host tests (below). `tests/platform/iob_node_real.c` puts this firmware in place of the platform's simulated node. |
 
 ## Building and testing
@@ -28,7 +29,7 @@ reference this firmware is compared against byte for byte.
 make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, the chip drivers against frame-level chip models
 make master-test   # the platform's whole host suite with every simulated I/O board replaced by this firmware
 make target        # arm-none-eabi-gcc: compile and link for the STM32G0B1 against ST's HAL headers
-make vnode         # a virtual board on a pseudo-terminal, for trying tools/at02.py (Linux/macOS)
+make vnode         # a virtual board on a pseudo-terminal, for trying tools/at02.py and at13.py (Linux/macOS)
 ```
 
 `make target` needs `..\ext` with the xPack arm-none-eabi-gcc 13.3.1 and ST's
@@ -43,6 +44,29 @@ Results on 22 Oct 2026:
 | `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
 | `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.0 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
+
+## AT-13 on a board: tools/at13.py
+
+The digital inputs: each one on and off, 5 ms and 12 ms pulses with the 8 ms filter, and wire
+break with the check on and off. Run it over the board's **USB-C port** (it reads register 17
+every 1-2 ms there; a USB-RS485 adapter needs its latency timer at 1 ms):
+
+```
+python tools\at13.py COM7 --usb               # you switch the inputs; the script sees each change
+python tools\at13.py COM7 --usb --loopback    # bank B outputs 9-16 wired to inputs 1-8: no pulse source needed
+```
+
+Manual mode needs a 24 V source you can pulse for 5 ms and 12 ms into input 1 (a function
+generator driving a transistor, a PLC output, a timer relay); the script watches 15-20 s while you
+send them, then asks how many you sent. In loopback mode the script switches the inputs through
+bank B itself (the only test that turns outputs on, and only those) and times the pulses on the
+PC. The wire-break step is always by hand. Settings it changes are put back.
+
+Tried here against the firmware on a pseudo-terminal with a model of the ISO1I813T's filter
+(`build/vnode -L`, and a scripted operator for the manual steps): all 21 checks pass over USB and
+over RS-485, and with the filter switched off (`-m 5`) the 5 ms check fails as it should. A 12 ms
+pulse is visible in register 17 for about 11-12 ms (the chip's up/down-counter filter delays both
+edges by its 10 ms).
 
 ## Main loop (port/stm32g0/node_main.c)
 

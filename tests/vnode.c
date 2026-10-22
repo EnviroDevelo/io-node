@@ -8,7 +8,13 @@
  *     -u  behave as the USB port (answers at 247 too; RX_ERRORS not counted)
  *     -m  deliberately break one rule, to show the script catches it:
  *         1 answer another address too, 2 do not count bad CRCs, 3 answer unknown functions
- *         with exception 02, 4 let a rejected multi-register write change its first register
+ *         with exception 02, 4 let a rejected multi-register write change its first register,
+ *         5 no input filter (every pulse passes)
+ *     -L  loopback: bank B outputs 9-16 wired to inputs 1-8 (for tools/at13.py --loopback)
+ * The inputs pass through a model of the ISO1I813T filter (an up/down counter of the filter time,
+ * datasheet 3.6), at the setting FILTER_MS maps to. Commands on stdin, one per line, set the
+ * outside world: "in <mask>" inputs switched on (OR-ed with the loopback), "wb <mask>" wires cut,
+ * "pulse <mask> <ms>" inputs on for exactly that long on the model's own 1 ms clock.
  * Prints the pty's path, then serves until killed. Host only (Linux / macOS). */
 #define _XOPEN_SOURCE 600
 #define _DEFAULT_SOURCE
@@ -25,6 +31,16 @@
 #include "node.h"
 #include "sim_hw.h"
 
+/* ISO1I813T filter time for FILTER_MS, in whole ms (1.6 ms -> 2, 3.2 ms -> 3; 0 = bypass) */
+static unsigned filter_len(unsigned ms)
+{
+    if (ms == 0) return 0;
+    if (ms <= 1) return 2;
+    if (ms <= 3) return 3;
+    if (ms <= 10) return 10;
+    return 20;
+}
+
 static uint32_t now_ms(void)
 {
     struct timespec t;
@@ -34,12 +50,13 @@ static uint32_t now_ms(void)
 
 int main(int argc, char **argv)
 {
-    int addr = 1, usb = 0, mut = 0, opt;
-    while ((opt = getopt(argc, argv, "a:um:")) != -1) {
+    int addr = 1, usb = 0, mut = 0, loop = 0, opt;
+    while ((opt = getopt(argc, argv, "a:um:L")) != -1) {
         if (opt == 'a') addr = atoi(optarg);
         else if (opt == 'u') usb = 1;
         else if (opt == 'm') mut = atoi(optarg);
-        else { fprintf(stderr, "usage: vnode [-a address] [-u] [-m mutation]\n"); return 2; }
+        else if (opt == 'L') loop = 1;
+        else { fprintf(stderr, "usage: vnode [-a address] [-u] [-m mutation] [-L]\n"); return 2; }
     }
     int m = posix_openpt(O_RDWR | O_NOCTTY);
     if (m < 0 || grantpt(m) || unlockpt(m)) { perror("pty"); return 1; }
@@ -62,11 +79,51 @@ int main(int argc, char **argv)
 
     uint8_t rx[NODE_FRAME_MAX + 16], tx[NODE_FRAME_MAX];
     size_t len = 0;
+    unsigned forced = 0, cnt[8] = { 0 }, pulse_mask = 0;
+    uint32_t pulse_end = 0;
+    uint8_t filtered = 0;
+    uint32_t world_ms = now_ms();
+    char line[64];
+    size_t ll = 0;
+    fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
     for (;;) {
-        struct pollfd p = { m, POLLIN, 0 };
-        int r = poll(&p, 1, len ? 2 : 1);
+        struct pollfd p[2] = { { m, POLLIN, 0 }, { 0, POLLIN, 0 } };
+        int r = poll(p, 2, len ? 2 : 1);
+        /* the outside world, 1 ms steps: raw inputs -> the chip's filter -> what the node reads */
+        for (uint32_t tnow = now_ms(); world_ms != tnow; world_ms++) {
+            if (pulse_mask && (int32_t)(world_ms - pulse_end) >= 0) pulse_mask = 0;
+            uint8_t raw = (uint8_t)(forced | pulse_mask | (loop ? hw.b_out : 0u));
+            unsigned nf = mut == 5 ? 0 : filter_len(hw.in_filter_cfg);
+            for (int c = 0; c < 8; c++) {
+                unsigned bit = (raw >> c) & 1u;
+                if (nf == 0) { cnt[c] = 0; filtered = (uint8_t)((filtered & ~(1u << c)) | bit << c); continue; }
+                if (bit && cnt[c] < nf) cnt[c]++;
+                if (!bit && cnt[c] > 0) cnt[c]--;
+                if (cnt[c] == nf) filtered |= (uint8_t)(1u << c);
+                if (cnt[c] == 0) filtered &= (uint8_t)~(1u << c);
+            }
+            hw.inputs = filtered;
+        }
+        if (r > 0 && (p[1].revents & POLLIN)) {
+            char ch;
+            while (read(0, &ch, 1) == 1) {
+                if (ch != '\n') { if (ll < sizeof line - 1) line[ll++] = ch; continue; }
+                line[ll] = 0;
+                ll = 0;
+                int v, d;
+                if (sscanf(line, "pulse %i %i", &v, &d) == 2) {
+                    pulse_mask = (unsigned)v & 0xFFu;
+                    pulse_end = world_ms + (uint32_t)d;
+                    continue;
+                }
+                if (sscanf(line, "in %i", &v) == 1) {
+                    forced = (unsigned)v & 0xFFu;
+                }
+                else if (sscanf(line, "wb %i", &v) == 1) hw.wirebreak_raw = (uint8_t)v;
+            }
+        }
         node_poll(&n, now_ms());
-        if (r > 0 && (p.revents & POLLIN)) {
+        if (r > 0 && (p[0].revents & POLLIN)) {
             ssize_t k = read(m, rx + len, sizeof rx - len);
             if (k > 0) { len += (size_t)k; if (len >= sizeof rx) len = sizeof rx - 1; }
             continue;
