@@ -162,13 +162,20 @@ void node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t
     apply_outputs(n);
 }
 
-void node_poll(node_t *n, uint32_t now)
+/* FW-21: the hold time runs out -> everything off, gate closed, TIMEOUT latched. Checked every
+ * loop pass and before every frame, so no frame can act on an expired hold. */
+static void hold_check(node_t *n, uint32_t now)
 {
-    /* FW-21: the hold time runs out -> everything off, gate closed, TIMEOUT latched */
     if (n->gate && (uint32_t)(now - n->last_write_ms) >= (uint32_t)n->hold_ds * 100u) {
         n->gate = false;
         n->timeout_latched = true;
+        apply_outputs(n);
     }
+}
+
+void node_poll(node_t *n, uint32_t now)
+{
+    hold_check(n, now);
     service_chips(n, now);
     apply_outputs(n);                       /* every pass: also rewrites bank A after any glitch */
     if (n->gate && !n->boot_pending) n->hw->b_wdg_service(n->hw->ctx);    /* FW-24 */
@@ -334,6 +341,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
                     uint8_t *tx)
 {
     n->frames++;
+    hold_check(n, now);
     /* FW-12: damaged frames are dropped and counted (RS-485 only: RX_ERRORS is about the bus) */
     if (rx_error || len < 4u || len > NODE_FRAME_MAX ||
         mbr_crc16(rx, len - 2u) != (uint16_t)(rx[len - 2u] | rx[len - 1u] << 8)) {

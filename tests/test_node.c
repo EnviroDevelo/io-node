@@ -158,6 +158,14 @@ static void t_hold(void)          /* FW-21, FW-26, FW-44 */
     CHECK_EQ(wr1(RS, 1, IOB_R_OUT_CMD, 0x0300), MBR_OK);
     CHECK(node_healthy(&n));
     CHECK_EQ(hw.b_out, 0x03); CHECK_EQ(hw.relays, 3);
+    /* a frame arriving after the hold ran out, before the next loop pass, cannot act on the old hold */
+    CHECK_EQ(wr1(RS, 1, IOB_R_HOLD_DS, 10), MBR_OK);
+    CHECK_EQ(wr1(RS, 1, IOB_R_OUT_CMD, 0x00F0), MBR_OK);
+    now += 1000;                                                  /* no node_poll in between */
+    CHECK_EQ(wr1(RS, 1, IOB_R_RELAY_CMD, 3), MBR_OK);
+    CHECK_EQ(hw.a_out | hw.b_out | hw.relays, 0);
+    CHECK(reg(IOB_R_STATUS) & IOB_ST_TIMEOUT);
+    CHECK_EQ(wr1(RS, 1, IOB_R_FAULT_CLEAR, 1), MBR_OK);
     /* the longest hold, 10 min */
     CHECK_EQ(wr1(RS, 1, IOB_R_HOLD_DS, 6000), MBR_OK);
     CHECK_EQ(wr1(RS, 1, IOB_R_OUT_CMD, 1), MBR_OK);

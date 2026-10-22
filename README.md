@@ -36,7 +36,7 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 299 checks, 0 failed |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 305 checks, 0 failed |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
 | `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
 | `make target` | Compiles and links with -Werror for Cortex-M0+: 6.8 KB flash, 3.5 KB RAM (of 256 KB and 144 KB), chip drivers in their fail-safe form |
@@ -71,7 +71,7 @@ What is known so far is in each driver's header comment, with its source.
 | FW-13 | `rs485_init`: CR3.DEM | target build |
 | FW-14 | `rs485_irq` ignores bytes while a frame waits or a reply goes out | target build |
 | FW-20 | `write_apply` → `apply_outputs` before CMD_ECHO | `t_outputs` |
-| FW-21 | `node_poll` hold check every 1 ms pass | `t_hold` (incl. 10 min and the 2^32 ms wrap) |
+| FW-21 | `hold_check` every 1 ms pass and before every frame | `t_hold` (incl. 10 min and the 2^32 ms wrap) |
 | FW-22 | `node_healthy`; `node_main` toggles once per pass | `t_chips`, `t_hold` |
 | FW-23 | `board_iwdg_start` (100 ms), refreshed only in `node_main` | target build; AT-07 |
 | FW-24 | `node_poll`: `b_wdg_service` only while the gate is open | `t_outputs`, `t_hold` (servicing itself: datasheet) |
