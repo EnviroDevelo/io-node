@@ -28,15 +28,18 @@ $(BUILD)/node_tests: $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) $(HDRS)
 
 # ---- the platform's tests with the real node in place of iob_node_sim.c ----
 # The platform's own Makefile builds its test binary, with its source list (CORE) read back from
-# it and only iob_node_sim.c swapped out, into this repository's build directory.
-PLAT_CORE := $(shell $(MAKE) -s --no-print-directory -C $(PLAT) -f Makefile -f $(CURDIR)/tools/printvar.mk print-CORE 2>/dev/null)
-REAL_NODE  = $(CURDIR)/tests/platform/iob_node_real.c $(CURDIR)/node/node.c $(CURDIR)/tests/sim_hw.c
-master-test: $(REAL_NODE) $(HDRS)
+# it and only iob_node_sim.c swapped out, into this repository's build directory. Paths are given
+# relative to the platform folder (SELF = this repository as seen from there), because make cannot
+# handle the spaces in "My Documents" or "CEMS Supervisor" in absolute paths.
+SELF      ?= ../$(lastword $(notdir $(CURDIR)))
+PLAT_CORE := $(shell $(MAKE) -s --no-print-directory -C $(PLAT) -f Makefile -f ../$(lastword $(notdir $(CURDIR)))/tools/printvar.mk print-CORE 2>/dev/null)
+REAL_NODE  = $(SELF)/tests/platform/iob_node_real.c $(SELF)/node/node.c $(SELF)/tests/sim_hw.c
+master-test:
 	@test -n "$(PLAT_CORE)" || { echo "cannot read CORE from $(PLAT)/Makefile"; exit 1; }
-	$(MAKE) -C $(PLAT) BUILD=$(CURDIR)/$(BUILD)/plat \
+	$(MAKE) -C $(PLAT) BUILD=$(SELF)/$(BUILD)/plat \
 	    CORE="$(filter-out platform/bsp/iob_node_sim.c,$(PLAT_CORE)) $(REAL_NODE)" \
-	    CFLAGS="$(CFLAGS) -I$(CURDIR)/node -I$(CURDIR)/tests" $(CURDIR)/$(BUILD)/plat/tests
-	cd $(PLAT) && $(CURDIR)/$(BUILD)/plat/tests
+	    CFLAGS="$(CFLAGS) -I$(SELF)/node -I$(SELF)/tests" $(SELF)/$(BUILD)/plat/tests
+	cd $(PLAT) && $(SELF)/$(BUILD)/plat/tests
 
 target:
 	$(MAKE) -f port/stm32g0/check.mk PLAT=$(PLAT)
