@@ -25,6 +25,9 @@ typedef struct {
     uint8_t  stored_address;
     int      addr_store_rc;              /* what the next stores return (NODE_HW_OK) */
     uint32_t addr_stores;
+    uint8_t  stored_serial[16];
+    int      serial_store_rc;
+    uint32_t serial_stores;
     node_hw_t hw;
 } sim_hw_t;
 

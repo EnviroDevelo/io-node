@@ -247,12 +247,12 @@ static void t_rules(void)         /* section 5 exceptions, FW-12, FW-02 */
     len = mbr_req_read(f, 5, 0, 1); f[2] ^= 0x10;
     node_frame(&n, RS, now, f, (uint16_t)len, false, tx);
     CHECK_EQ(reg(IOB_R_RX_ERRORS), 0);
-    /* FW-02: DIP 0 never answers on RS-485; its comms LED is steady on */
+    /* FW-02: without an address the node answers on RS-485 only at 246 (commissioning); comms LED steady on */
     boot(0, NODE_RST_POWER_ON, 0);
-    for (uint8_t a = 0; a < 248; a++) {
-        if (a == 0) continue;
+    for (uint8_t a = 1; a < 248; a++) {
         len = mbr_req_read(f, a, 0, 1);
-        if (node_frame(&n, RS, now, f, (uint16_t)len, false, tx)) { CHECK(0); break; }
+        bool answered = node_frame(&n, RS, now, f, (uint16_t)len, false, tx) != 0;
+        if (answered != (a == IOB_COMMISSION_ADDR)) { CHECK(0); break; }
     }
     bool steady = true;                                       /* comms LED steady on */
     for (uint32_t t = 0; t < 2000; t++) steady &= node_comms_led(&n, t);
@@ -601,7 +601,7 @@ static void t_address(void)
     CHECK_EQ(regs[0], 0);
     CHECK(node_comms_led(&n, now));                              /* steady on: not set */
     /* out of range, or over RS-485: refused, nothing stored */
-    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 248), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 246), MBR_EXCEPTION); CHECK_EQ(exc, 3);
     CHECK_EQ(hw.addr_stores, 0u);
     /* set it */
     CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 9), MBR_OK);
@@ -646,6 +646,186 @@ static void t_address(void)
     CHECK(!node_fault_led(&n));
 }
 
+/* FW-61: the address over RS-485, only through the handshake */
+static int unlock(uint8_t addr, const uint16_t *uid, uint16_t key)
+{
+    uint8_t f[MBR_FRAME_MAX];
+    uint16_t v[7] = { key, uid[0], uid[1], uid[2], uid[3], uid[4], uid[5] };
+    size_t len = mbr_req_write(f, addr, IOB_R_CFG_UNLOCK, v, 7);
+    return xfer(RS, f, len, 0);
+}
+static int commit(uint8_t addr, uint16_t new_addr, uint16_t ch, uint32_t chk)
+{
+    uint8_t f[MBR_FRAME_MAX];
+    uint16_t v[4] = { new_addr, ch, (uint16_t)(chk >> 16), (uint16_t)chk };
+    size_t len = mbr_req_write(f, addr, IOB_R_CFG_ADDR, v, 4);
+    return xfer(RS, f, len, 0);
+}
+static uint16_t challenge(uint8_t addr) { CHECK_EQ(rd(RS, addr, IOB_R_CFG_UNLOCK, 1), MBR_OK); return regs[0]; }
+
+static void t_handshake(void)
+{
+    sim_hw_init(&hw);
+    boot(5, NODE_RST_POWER_ON, 0);
+    const uint16_t *uid = n.uid;
+    uint16_t bad_uid[6];
+    memcpy(bad_uid, uid, sizeof bad_uid); bad_uid[3] ^= 1u;
+    CHECK_EQ(challenge(5), 0);                                   /* locked */
+    /* a plain write of 38, or anything else into 40..51, is refused */
+    CHECK_EQ(wr1(RS, 5, IOB_R_NODE_ADDR, 9), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(wr1(RS, 5, IOB_R_CFG_UNLOCK, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    uint16_t w2[2] = { 9, 0 };
+    uint8_t f[MBR_FRAME_MAX];
+    size_t len = mbr_req_write(f, 5, IOB_R_CFG_ADDR, w2, 2);
+    CHECK_EQ(xfer(RS, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    /* commit without an unlock, a wrong key, a wrong UID */
+    CHECK_EQ(commit(5, 9, 1, iob_cfg_check(uid, 1, 9)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(unlock(5, uid, 0x1234), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(unlock(5, bad_uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(challenge(5), 0);
+    CHECK_EQ(hw.addr_stores, 0u);
+    /* the full handshake: the reply comes from the old address, the node is at the new one at once */
+    CHECK_EQ(unlock(5, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    uint16_t ch = challenge(5);
+    CHECK(ch != 0);
+    CHECK_EQ(commit(5, 9, ch, iob_cfg_check(uid, ch, 9)), MBR_OK);
+    CHECK_EQ(tx[0], 5);
+    CHECK_EQ(hw.stored_address, 9);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 9);
+    len = mbr_req_read(f, 5, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
+    CHECK_EQ(rd(RS, 9, IOB_R_MAGIC, 1), MBR_OK);
+    CHECK_EQ(challenge(9), 0);                                   /* used up */
+    CHECK_EQ(commit(9, 10, ch, iob_cfg_check(uid, ch, 10)), MBR_EXCEPTION); CHECK_EQ(exc, 4);   /* no replay */
+    /* while the master is in control and the outputs are on: allowed, outputs untouched */
+    CHECK_EQ(rw(RS, 9, 0x0101, 1, 3), MBR_OK);
+    CHECK_EQ(unlock(9, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    ch = challenge(9);
+    CHECK_EQ(commit(9, 12, ch, iob_cfg_check(uid, ch, 12)), MBR_OK);
+    CHECK_EQ(hw.a_out, 0x01); CHECK_EQ(hw.relays, 1);
+    CHECK_EQ(rw(RS, 12, 0x0101, 1, 4), MBR_OK);                  /* the master carries on at 12 */
+    /* each new unlock gives a new challenge; an old one is refused */
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    uint16_t c1 = challenge(12);
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    uint16_t c2 = challenge(12);
+    CHECK(c1 != c2 && c2 != 0);
+    CHECK_EQ(commit(12, 13, c1, iob_cfg_check(uid, c1, 13)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(challenge(12), 0);                                  /* and that ended the unlock */
+    /* out of range: 0, 246, 247 (03) */
+    for (int i = 0; i < 3; i++) {
+        uint16_t bad[3] = { 0, IOB_COMMISSION_ADDR, NODE_USB_ADDRESS };
+        CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+        ch = challenge(12);
+        CHECK_EQ(commit(12, bad[i], ch, iob_cfg_check(uid, ch, bad[i])), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    }
+    /* the window: 10 s */
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    ch = challenge(12);
+    run(IOB_CFG_WINDOW_MS);
+    CHECK_EQ(challenge(12), 0);
+    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    /* 3 wrong check values in a row: locked out for 60 s, even with the right one */
+    for (int i = 0; i < 3; i++) {
+        CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+        ch = challenge(12);
+        CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14) ^ 0x10u), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    }
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    run(IOB_CFG_LOCKOUT_MS - 10u);
+    CHECK_EQ(rw(RS, 12, 0, 0, 5), MBR_OK);
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    run(20);
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    ch = challenge(12);
+    /* the F-RAM save fails: 04, the address stays */
+    hw.addr_store_rc = NODE_HW_NO_ANSWER;
+    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 12);
+    hw.addr_store_rc = NODE_HW_OK;
+    /* a check made for another board does not work here */
+    uint16_t other[6] = { 1, 2, 3, 4, 5, 6 };
+    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    ch = challenge(12);
+    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(other, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 12);
+}
+
+/* FW-02, FW-61: a new board (no address) on RS-485 answers at 246: reads and the handshake only */
+static void t_commission(void)
+{
+    sim_hw_init(&hw);
+    boot(0, NODE_RST_POWER_ON, 0);
+    CHECK_EQ(rd(RS, IOB_COMMISSION_ADDR, IOB_R_MAGIC, IOB_R_IDENT_N), MBR_OK);
+    CHECK_EQ(regs[0], IOB_MAGIC);
+    CHECK_EQ(rd(RS, IOB_COMMISSION_ADDR, IOB_R_NODE_ADDR, 1), MBR_OK);
+    CHECK_EQ(regs[0], 0);
+    /* nothing can be switched or set */
+    CHECK_EQ(rw(RS, IOB_COMMISSION_ADDR, 0x0001, 0, 1), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(wr1(RS, IOB_COMMISSION_ADDR, IOB_R_HOLD_DS, 50), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(hw.a_out, 0); CHECK(!node_healthy(&n));
+    /* not counted as the link: no COMMS_LOST later */
+    run(3000);
+    CHECK(!(status() & IOB_ST_COMMS_LOST));
+    CHECK(node_comms_led(&n, now));                              /* steady on: not set */
+    /* give it an address */
+    CHECK_EQ(unlock(IOB_COMMISSION_ADDR, n.uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
+    uint16_t ch = challenge(IOB_COMMISSION_ADDR);
+    CHECK_EQ(commit(IOB_COMMISSION_ADDR, 3, ch, iob_cfg_check(n.uid, ch, 3)), MBR_OK);
+    CHECK_EQ(tx[0], IOB_COMMISSION_ADDR);
+    CHECK_EQ(hw.stored_address, 3);
+    uint8_t f[MBR_FRAME_MAX];
+    size_t len = mbr_req_read(f, IOB_COMMISSION_ADDR, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);   /* gone from 246 */
+    CHECK_EQ(rw(RS, 3, 0x0001, 0, 1), MBR_OK);                  /* and a normal board at 3 */
+    CHECK_EQ(hw.a_out, 0x01);
+}
+
+/* FW-62: the serial number, USB only, permanent once the board has been off with it */
+static int serial_write_on(node_port_t port, uint8_t addr, const char *sn)
+{
+    uint8_t f[MBR_FRAME_MAX];
+    uint16_t v[8] = { 0 };
+    for (unsigned i = 0; i < 16u && sn[i]; i++) v[i / 2u] |= (uint16_t)((uint8_t)sn[i] << (i % 2u ? 0 : 8));
+    size_t len = mbr_req_write(f, addr, IOB_R_SERIAL, v, 8);
+    return xfer(port, f, len, 0);
+}
+static void t_serial(void)
+{
+    sim_hw_init(&hw);
+    boot(4, NODE_RST_POWER_ON, 0);
+    CHECK_EQ(rd(RS, 4, IOB_R_SERIAL, IOB_SERIAL_REGS), MBR_OK);
+    for (int i = 0; i < 8; i++) CHECK_EQ(regs[i], 0);           /* not set */
+    CHECK_EQ(serial_write_on(RS, 4, "CIO-26-00042"), MBR_EXCEPTION); CHECK_EQ(exc, 2);   /* never over RS-485 */
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, ""), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, "CIO\x01"), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    uint16_t gap[8] = { 0x4100, 0x4200, 0, 0, 0, 0, 0, 0 };     /* a character after the padding */
+    uint8_t f[MBR_FRAME_MAX];
+    size_t len = mbr_req_write(f, NODE_USB_ADDRESS, IOB_R_SERIAL, gap, 8);
+    CHECK_EQ(xfer(NODE_PORT_USB, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_SERIAL, 0x4142), MBR_EXCEPTION); CHECK_EQ(exc, 2);   /* all 8 at once */
+    CHECK_EQ(hw.serial_stores, 0u);
+    /* written in production, read from anywhere */
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, "CIO-26-00O42"), MBR_OK);
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, "CIO-26-00042"), MBR_OK);   /* typo fixed before power-off */
+    CHECK(memcmp(hw.stored_serial, "CIO-26-00042\0\0\0\0", 16) == 0);
+    CHECK_EQ(rd(RS, 4, IOB_R_SERIAL, IOB_SERIAL_REGS), MBR_OK);
+    CHECK_EQ(regs[0], 0x4349); CHECK_EQ(regs[5], 0x3432); CHECK_EQ(regs[6], 0);
+    /* after a power cycle it is permanent */
+    node_boot_t b = { .address = 4, .nv_ok = true, .hw_rev = 2, .reset_cause = NODE_RST_POWER_ON };
+    memcpy(b.serial, hw.stored_serial, 16);
+    node_init(&n, &hw.hw, &b, now);
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, "CIO-26-99999"), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(rd(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_SERIAL, 1), MBR_OK);
+    CHECK_EQ(regs[0], 0x4349);
+    /* a failed save: 04 and nothing changed */
+    boot(4, NODE_RST_POWER_ON, 0);
+    hw.serial_store_rc = NODE_HW_READBACK;
+    CHECK_EQ(serial_write_on(NODE_PORT_USB, NODE_USB_ADDRESS, "CIO-26-00043"), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(reg(IOB_R_SERIAL), 0);
+    hw.serial_store_rc = NODE_HW_OK;
+}
+
 void test_node(void)
 {
     t_startup();
@@ -657,4 +837,7 @@ void test_node(void)
     t_comms();
     t_inputs_hold();
     t_address();
+    t_handshake();
+    t_commission();
+    t_serial();
 }

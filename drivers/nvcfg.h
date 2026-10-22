@@ -13,7 +13,12 @@
  * A save goes to the slot not holding the newest good record, with the sequence one higher, and
  * is read back. A power cut during a save spoils at most that slot; the other still holds the
  * previous address. A record with a later version is read as long as bytes 0-7 keep this
- * meaning, so newer firmware may add records after 0x10 but must keep these two. */
+ * meaning, so newer firmware may add records after 0x40 but must keep these.
+ *
+ * Serial number (FW-62), one record at 0x20, written once in production:
+ *   [0] 'S' [1] 'N' [2] version (1) [3] 0 [4..19] 16 characters, NUL padded [20..21] CRC-16 of 0..19
+ * A power cut while it is written leaves no good record, which reads as "not set" and can be
+ * written again. */
 #ifndef NVCFG_H
 #define NVCFG_H
 #include <stdint.h>
@@ -24,5 +29,7 @@
 
 int nvcfg_load(uint8_t *address);                    /* at start-up */
 int nvcfg_store_address(void *ctx, uint8_t address); /* NODE_HW_OK, NODE_HW_NO_ANSWER or NODE_HW_READBACK */
+int nvcfg_load_serial(uint8_t serial[16]);           /* NVCFG_*; all 0 unless a good record */
+int nvcfg_store_serial(void *ctx, const uint8_t serial[16]);   /* NODE_HW_* */
 
 #endif

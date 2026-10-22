@@ -71,6 +71,7 @@ void board_boot_info(node_boot_t *b)
     uint8_t a = 0;
     b->nv_ok = nvcfg_load(&a) >= 0;
     b->address = a;
+    (void)nvcfg_load_serial(b->serial);                             /* FW-62: all 0 if not set */
     /* board revision straps: 0..3 -> HW_REV 1..4 (HW-11) */
     b->hw_rev = (uint8_t)(1u + (pin_get(HWREV0_GPIO_Port, HWREV0_Pin) ? 1u : 0u) + (pin_get(HWREV1_GPIO_Port, HWREV1_Pin) ? 2u : 0u));
     /* 96-bit unique ID: register 69 = bits 0-15 of the first word, 70 = bits 16-31, ... */

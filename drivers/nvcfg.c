@@ -65,3 +65,33 @@ int nvcfg_store_address(void *ctx, uint8_t address)
     cur = address;
     return NODE_HW_OK;
 }
+
+/* ---------------- serial number (FW-62) ---------------- */
+#define SN_AT   0x20u
+#define SN_SIZE 22u
+
+int nvcfg_load_serial(uint8_t serial[16])
+{
+    uint8_t r[SN_SIZE];
+    memset(serial, 0, 16);
+    if (port_fram_read(SN_AT, r, SN_SIZE) != 0) return NVCFG_NO_CHIP;
+    uint16_t c = mbr_crc16(r, 20);
+    if (r[0] != 'S' || r[1] != 'N' || r[2] < VERSION || r[20] != (uint8_t)c || r[21] != (uint8_t)(c >> 8))
+        return NVCFG_BLANK;
+    memcpy(serial, r + 4, 16);
+    return NVCFG_OK;
+}
+
+int nvcfg_store_serial(void *ctx, const uint8_t serial[16])
+{
+    (void)ctx;
+    uint8_t r[SN_SIZE], back[SN_SIZE];
+    r[0] = 'S'; r[1] = 'N'; r[2] = VERSION; r[3] = 0;
+    memcpy(r + 4, serial, 16);
+    uint16_t c = mbr_crc16(r, 20);
+    r[20] = (uint8_t)c;
+    r[21] = (uint8_t)(c >> 8);
+    if (port_fram_write(SN_AT, r, SN_SIZE) != 0) return NODE_HW_NO_ANSWER;
+    if (port_fram_read(SN_AT, back, SN_SIZE) != 0) return NODE_HW_NO_ANSWER;
+    return memcmp(r, back, SN_SIZE) == 0 ? NODE_HW_OK : NODE_HW_READBACK;
+}

@@ -40,9 +40,30 @@ REG_SPACE = 80
 MAGIC, MAP_VERSION, BOOT_KEY = 0x494F, 1, 0xB007
 USB_ADDRESS = 247
 WRITABLE = {0, 1, 2, 32, 33, 34, 35, 36}            # 37 too, but over USB only and only the key
-DEFINED = set(range(0, 3)) | set(range(16, 28)) | set(range(32, 39)) | set(range(64, 79))
+R_CFG_UNLOCK, R_CFG_ADDR, R_SERIAL = 40, 48, 52
+CFG_UNLOCK_KEY, ADDR_MAX, COMMISSION_ADDR = 0xC0F1, 245, 246
+DEFINED = set(range(0, 3)) | set(range(16, 28)) | set(range(32, 39)) | set(range(40, 60)) | set(range(64, 79))
 RESERVED = [r for r in range(REG_SPACE) if r not in DEFINED]
-READ_ZERO = RESERVED + [R_FAULT_CLEAR, R_BOOTLOADER]   # write-only registers read 0 as well
+READ_ZERO = RESERVED + [R_FAULT_CLEAR, R_BOOTLOADER] + list(range(40, 52))   # write-only / locked read 0
+
+
+# the address handshake's check value (platform iobus.h iob_cfg_check, node FW-61)
+_CFG_KEY = bytes([0xB7, 0x2A, 0x6E, 0xA6, 0xB9, 0x96, 0x8A, 0x20, 0x32, 0x09, 0x55, 0x9A, 0x43, 0x39, 0xF2, 0x4E])
+
+
+def cfg_check(uid, challenge, address):
+    h = 2166136261
+
+    def word(h, w):
+        for b in ((w >> 8) & 0xFF, w & 0xFF):
+            h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+        return h
+    for i in range(0, 16, 2):
+        h = word(h, _CFG_KEY[i] << 8 | _CFG_KEY[i + 1])
+    for w in uid:
+        h = word(h, w)
+    h = word(h, challenge)
+    return word(h, address)
 
 
 def crc16(data):
@@ -330,12 +351,15 @@ def checks(run, node, usb, ident, saved):
     own = node.regs(R_NODE_ADDR, 1)[0]
     if usb:
         expect_exc(run, node.write1(R_BOOTLOADER, 0x1234), 3, "FC06 BOOTLOADER with a wrong key over USB -> 03")
-        expect_exc(run, node.write1(R_NODE_ADDR, 248), 3, "FC06 NODE_ADDRESS 248 over USB -> 03")
+        expect_exc(run, node.write1(R_NODE_ADDR, COMMISSION_ADDR), 3, "FC06 NODE_ADDRESS 246 over USB -> 03 (1..245)")
         run.out("  info  the board's own address (register 38): %s" % (own if own else "not set"))
     else:
         expect_exc(run, node.write1(R_BOOTLOADER, BOOT_KEY), 2, "FC06 BOOTLOADER over RS-485, even with the key -> 02")
         expect_exc(run, node.write1(R_NODE_ADDR, own), 2, "FC06 NODE_ADDRESS over RS-485 -> 02 (USB only)")
         run.check(own == node.addr, "NODE_ADDRESS (38) reads the address it answers at", "reads %d" % own)
+        expect_exc(run, node.write1(R_CFG_UNLOCK, CFG_UNLOCK_KEY), 2, "FC06 into the address handshake block -> 02")
+        expect_exc(run, node.write1(R_SERIAL, 0x4142), 2, "FC06 SERIAL -> 02")
+        expect_exc(run, node.writen(R_SERIAL, [0x4142] + [0] * 7), 2, "FC16 SERIAL over RS-485 -> 02 (USB only)")
     run.check(node.regs(R_NODE_ADDR, 1)[0] == own, "  ... NODE_ADDRESS unchanged")
 
     # ---------------- out-of-range values ----------------
@@ -398,6 +422,33 @@ def checks(run, node, usb, ident, saved):
                   "%d -> %d" % (errs0, errs1))
 
     # ---------------- accepted writes ----------------
+    # ---------------- the address handshake (FW-61), committing the address it already has ----------------
+    if not usb:
+        run.section("Address change handshake (commits the current address: nothing changes)")
+        uid = ident[5:11]
+        bad = list(uid); bad[2] ^= 1
+        r = node.writen(R_CFG_ADDR, [node.addr, 1, 0, 0])
+        expect_exc(run, r, 4, "commit without an unlock -> 04")
+        expect_exc(run, node.writen(R_CFG_UNLOCK, [0x1234] + uid), 3, "unlock with a wrong key -> 03")
+        expect_exc(run, node.writen(R_CFG_UNLOCK, [CFG_UNLOCK_KEY] + bad), 3, "unlock with another board's UID -> 03")
+        run.check(node.regs(R_CFG_UNLOCK, 1)[0] == 0, "  ... still locked (challenge reads 0)")
+        r = node.writen(R_CFG_UNLOCK, [CFG_UNLOCK_KEY] + uid)
+        if run.check(r.ok, "unlock with the key and this board's UID", r.what()):
+            ch = node.regs(R_CFG_UNLOCK, 1)[0]
+            run.check(ch != 0, "  ... a challenge to read back", "reads 0")
+            chk = cfg_check(uid, ch, node.addr) ^ 1
+            r = node.writen(R_CFG_ADDR, [node.addr, ch, chk >> 16, chk & 0xFFFF])
+            expect_exc(run, r, 4, "commit with a wrong check value -> 04")
+            run.check(node.regs(R_CFG_UNLOCK, 1)[0] == 0, "  ... and the unlock is over")
+            node.writen(R_CFG_UNLOCK, [CFG_UNLOCK_KEY] + uid)
+            ch = node.regs(R_CFG_UNLOCK, 1)[0]
+            chk = cfg_check(uid, ch, node.addr)
+            r = node.writen(R_CFG_ADDR, [node.addr, ch, chk >> 16, chk & 0xFFFF])
+            run.check(r.ok, "commit with the right check value (same address)", r.what())
+            r = node.writen(R_CFG_ADDR, [node.addr, ch, chk >> 16, chk & 0xFFFF])
+            expect_exc(run, r, 4, "the same commit again (replay) -> 04")
+            run.check(node.regs(R_NODE_ADDR, 1)[0] == node.addr, "  ... address unchanged")
+
     run.section("Accepted writes (all-off only)")
     r = node.write1(R_HOLD_DS, hold)
     run.check(r.ok and r.raw[:6] == frame([node.addr, 6] + u16(R_HOLD_DS, hold))[:6], "FC06 HOLD_DS echoes the request", r.what())

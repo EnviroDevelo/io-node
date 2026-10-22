@@ -5,9 +5,13 @@ The address lives in the board's F-RAM, not in the controller's flash, so firmwa
 (even with a full chip erase) never change it. A new board has no address (0) and stays silent
 on RS-485 with its comms LED steady on until one is set here.
 
-  python set_address.py COM7                 show the board and its address
-  python set_address.py COM7 --address 3     set it (1..247)
-  python set_address.py COM7 --clear         take the board off the bus (address 0)
+  python set_address.py COM7                 show the board, its address and serial number
+  python set_address.py COM7 --address 3     set the address (1..245)
+  python set_address.py COM7 --clear         take the board off the bus (address 0: it then answers on
+                                             RS-485 only at the commissioning address 246)
+  python set_address.py COM7 --serial CIO-26-00042
+                                             write the serial number (production only: up to 16 printable
+                                             characters; permanent once the board has been powered off)
 
 Connect to the board's USB-C port only (it answers at the service address 247 whatever its own
 address). The board refuses the change (exception 04) while the main board is controlling its
@@ -23,10 +27,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from at02 import Link, Node, USB_ADDRESS, MAGIC  # noqa: E402
 
-R_NODE_ADDR = 38
+R_NODE_ADDR, R_SERIAL = 38, 52
 EXC_TEXT = {
     2: "the board refused it as read-only: is this the RS-485 port rather than USB?",
-    3: "out of range (0..247)",
+    3: "out of range (address 1..245; serial 1-16 printable characters)",
     4: "the main board is in control of this board, or the address could not be saved to the F-RAM. "
        "Disconnect the RS-485 cable (or wait for the hold time to run out) and try again; if it still "
        "fails, the board's F-RAM is not answering",
@@ -37,19 +41,25 @@ def main():
     ap = argparse.ArgumentParser(description="Read or set a CEMS I/O board's address over USB.")
     ap.add_argument("port", help="the board's USB serial port: COM7, /dev/ttyACM0 ...")
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("-a", "--address", type=int, help="new address, 1..247")
+    g.add_argument("-a", "--address", type=int, help="new address, 1..245")
     g.add_argument("--clear", action="store_true", help="set address 0: the board stays off the RS-485 bus")
+    ap.add_argument("--serial", help="write the serial number (production only)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     new = 0 if args.clear else args.address
-    if new is not None and not 0 <= new <= 247:
-        ap.error("--address must be 1..247")
+    if new is not None and not 0 <= new <= 245:
+        ap.error("--address must be 1..245")
+    if args.serial is not None:
+        sn = args.serial.encode("ascii", "replace")
+        if not 1 <= len(sn) <= 16 or any(c < 0x20 or c > 0x7E for c in sn):
+            ap.error("--serial: 1 to 16 printable ASCII characters")
 
     link = Link(args.port, 115200, 0.3, 0.01, args.verbose)
     node = Node(link, USB_ADDRESS)
     try:
         ident = node.regs(64, 15)
         addr = node.regs(R_NODE_ADDR, 1)[0]
+        snr = node.regs(R_SERIAL, 8)
     except IOError as e:
         print("Cannot reach the board: %s" % e)
         print("Is this the board's USB-C port, and is the board powered?")
@@ -61,7 +71,17 @@ def main():
     fw = ident[3]
     print("CEMS I/O board  UID %s  hardware rev %d  firmware %d.%d build %d" % (
         uid, ident[2], fw >> 8, fw & 0xFF, ident[4]))
-    print("Address: %s" % (addr if addr else "not set (silent on RS-485)"))
+    serial = b"".join(bytes([w >> 8, w & 0xFF]) for w in snr).rstrip(b"\0").decode("ascii", "replace")
+    print("Serial number: %s" % (serial or "not set"))
+    print("Address: %s" % (addr if addr else "not set (on RS-485 only at the commissioning address 246)"))
+    if args.serial is not None:
+        words = [(sn[i] if i < len(sn) else 0) << 8 | (sn[i + 1] if i + 1 < len(sn) else 0) for i in range(0, 16, 2)]
+        r = node.writen(R_SERIAL, words)
+        if not r.ok:
+            why = {2: "this board's serial number is already set and permanent"}.get(r.exc, EXC_TEXT.get(r.exc, r.what()))
+            print("Serial number not written: %s" % why)
+            return 1
+        print("Serial number %s written; it becomes permanent when the board is next powered off." % args.serial)
     if new is None:
         return 0
     if new == addr:

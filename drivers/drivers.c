@@ -12,6 +12,7 @@ static const node_hw_t board = {
     iso808_write, iso808_fault, iso808_wdg_tripped, iso808_wdg_service, iso808_supply_ok,
     board_relays,
     nvcfg_store_address,
+    nvcfg_store_serial,
 };
 
 const node_hw_t *drivers_hw(void) { return &board; }

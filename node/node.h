@@ -50,10 +50,16 @@
  *     control, that is within the hold time of its last valid write of register 0.
  *   - Register 37 (BOOTLOADER) is writable over USB only, value 0xB007; over RS-485 it is
  *     exception 02 like any read-only register.
- *   - Register 38 (NODE_ADDRESS) is writable over USB only, 0..247, and not while the RS-485
- *     master is in control (04). The new address is saved to the F-RAM and read back before
- *     the reply; if that fails the reply is exception 04 and nothing changes. It takes effect
- *     at once. */
+ *   - Register 38 (NODE_ADDRESS) is writable directly over USB only (factory), 0..245, and not
+ *     while the RS-485 master is in control (04). The new address is saved to the F-RAM and read
+ *     back before the reply; if that fails the reply is exception 04 and nothing changes. It takes
+ *     effect at once.
+ *   - Over RS-485 the address changes only through the handshake in iobus.h (FW-61): unlock with
+ *     the key and this board's unique ID, read the challenge, commit with the check value.
+ *   - A node without an address answers on RS-485 at 246 (FW-02, commissioning): reads and the
+ *     handshake only; every other write is exception 04, and it does not count as the link (FW-58).
+ *   - The serial number (52..59, FW-62) is written over USB only and only until the board has been
+ *     powered off once with it set. */
 #ifndef NODE_H
 #define NODE_H
 #include <stdbool.h>
@@ -92,6 +98,7 @@ typedef enum {                      /* reset cause, from the port's RCC flags */
 typedef struct {
     uint8_t      address;           /* 0..247 from the board's F-RAM, 0 = not set (FW-02, FW-60) */
     bool         nv_ok;             /* the F-RAM answered (else address 0 and the fault LED on) */
+    uint8_t      serial[16];        /* the board's serial number from the F-RAM, NUL padded; all 0 = not set */
     uint8_t      hw_rev;            /* from the straps (HW-11) */
     node_reset_t reset_cause;
     uint16_t     resets;            /* resets other than power-on since power-on (kept by the port in .noinit) */
@@ -114,6 +121,14 @@ typedef struct {
     /* state */
     uint8_t  address;               /* from the F-RAM; 0 = not set, never answers on RS-485 */
     bool     nv_fault;              /* the address F-RAM did not answer at start-up */
+    /* FW-61: address change over RS-485 */
+    uint16_t cfg_challenge;         /* 0: locked */
+    uint32_t cfg_until, cfg_lock_until, cfg_unlocks;
+    uint8_t  cfg_fails;
+    bool     cfg_locked_out;
+    /* FW-62: serial number */
+    uint8_t  serial[16];
+    bool     serial_written;        /* written since this start-up: may still be corrected */
     bool     config_needed, timeout_latched, wdg_latched;
     bool     gate;                  /* outputs follow the commands (FW-21) */
     bool     master_seen;           /* a valid RS-485 write of register 0 since start */

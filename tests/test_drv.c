@@ -304,6 +304,24 @@ static void t_nvcfg(void)
     CHECK_EQ(nvcfg_store_address(0, 32), NODE_HW_OK);
     CHECK_EQ(hp.fram[newer + 4], 31);                              /* the newer slot kept */
     CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 32);
+    /* FW-62: the serial number record, next to the address slots without touching them */
+    uint8_t sn[16], want[16] = "CIO-26-00042";
+    CHECK_EQ(nvcfg_load_serial(sn), NVCFG_BLANK);
+    for (int i = 0; i < 16; i++) CHECK_EQ(sn[i], 0);
+    CHECK_EQ(nvcfg_store_serial(0, want), NODE_HW_OK);
+    CHECK_EQ(nvcfg_load_serial(sn), NVCFG_OK);
+    CHECK(memcmp(sn, want, 16) == 0);
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 32);
+    hp.fram_cut = 18;                                            /* a power cut while writing it, past the first changed character */
+    uint8_t other[16] = "CIO-26-00043";
+    CHECK(nvcfg_store_serial(0, other) != NODE_HW_OK);
+    CHECK_EQ(nvcfg_load_serial(sn), NVCFG_BLANK);                /* reads as not set: can be written again */
+    CHECK_EQ(nvcfg_store_serial(0, other), NODE_HW_OK);
+    CHECK_EQ(nvcfg_load_serial(sn), NVCFG_OK);
+    CHECK(memcmp(sn, other, 16) == 0);
+    hp.fram_absent = true;
+    CHECK_EQ(nvcfg_load_serial(sn), NVCFG_NO_CHIP);
+    hp.fram_absent = false;
 }
 
 /* the whole node: address set over USB lands in the F-RAM, the RS-485 side moves to it, and a

@@ -59,6 +59,8 @@ bool node_heartbeat_led(uint32_t now) { return (now / 500u) % 2u == 0; }
 static void comms_check(node_t *n, uint32_t now)
 {
     if (n->comms_seen && !node_comms_ok(n, now)) n->comms_lost = true;
+    if (n->cfg_challenge && due(now, n->cfg_until)) n->cfg_challenge = 0;              /* FW-61 */
+    if (n->cfg_locked_out && due(now, n->cfg_lock_until)) n->cfg_locked_out = false;
 }
 
 /* FW-33: every change since the last RS-485 read noted. Without field supply A or a healthy
@@ -164,8 +166,9 @@ void node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t
 {
     memset(n, 0, sizeof *n);
     n->hw = hw;
-    n->address = boot->address <= 247u ? boot->address : 0u;             /* FW-02, FW-60 */
+    n->address = boot->address <= IOB_ADDR_MAX ? boot->address : 0u;    /* FW-02, FW-60 */
     n->nv_fault = !boot->nv_ok;
+    memcpy(n->serial, boot->serial, sizeof n->serial);
     n->hw_rev = boot->hw_rev;
     memcpy(n->uid, boot->uid, sizeof n->uid);
     n->resets = boot->resets;
@@ -261,8 +264,11 @@ uint16_t node_reg(const node_t *n, uint16_t r)
     case IOB_R_N_RELAYS: return n->n_relays;
     case IOB_R_N_INPUTS: return n->n_inputs;
     case IOB_R_NODE_ADDR: return n->address;
+    case IOB_R_CFG_UNLOCK: return n->cfg_challenge;
     default:
         if (r >= IOB_R_UID && r < IOB_R_UID + 6u) return n->uid[r - IOB_R_UID];
+        if (r >= IOB_R_SERIAL && r < IOB_R_SERIAL + IOB_SERIAL_REGS)
+            return (uint16_t)(n->serial[2u * (r - IOB_R_SERIAL)] << 8 | n->serial[2u * (r - IOB_R_SERIAL) + 1u]);
         return 0;                            /* reserved, FAULT_CLEAR and BOOTLOADER read 0 */
     }
 }
@@ -286,6 +292,7 @@ static bool value_ok(uint16_t r, uint16_t v)
 static uint8_t write_check(const node_t *n, node_port_t port, uint32_t now, uint16_t start, uint16_t cnt,
                            const uint8_t *data)
 {
+    if (port == NODE_PORT_RS485 && n->address == 0) return 4;          /* commissioning: nothing switches */
     bool touches_cmd = false, touches_addr = false;
     for (uint16_t i = 0; i < cnt; ++i) {
         uint16_t r = (uint16_t)(start + i), v = get16(data + 2u * i);
@@ -296,7 +303,7 @@ static uint8_t write_check(const node_t *n, node_port_t port, uint32_t now, uint
         }
         if (r == IOB_R_NODE_ADDR) {                                          /* FW-60 */
             if (port != NODE_PORT_USB) return 2;
-            if (v > 247u) return 3;
+            if (v > IOB_ADDR_MAX) return 3;
             touches_addr = true;
             continue;
         }
@@ -360,6 +367,63 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
     n->echo = n->seq;
 }
 
+/* ---------------- address handshake and serial number (FW-61, FW-62) ---------------- */
+
+static void cfg_end(node_t *n) { n->cfg_challenge = 0; }
+
+/* FC16 to IOB_R_CFG_UNLOCK: the key and this board's unique ID. 0 or an exception code. */
+static uint8_t cfg_unlock(node_t *n, uint32_t now, const uint8_t *d)
+{
+    if (n->cfg_locked_out) { cfg_end(n); return 4; }
+    bool ok = get16(d) == IOB_CFG_UNLOCK_KEY;
+    for (unsigned i = 0; i < 6u; i++) ok = ok && get16(d + 2u + 2u * i) == n->uid[i];
+    if (!ok) { cfg_end(n); return 3; }
+    n->cfg_unlocks++;
+    n->cfg_challenge = iob_cfg_challenge(n->uid, n->cfg_unlocks, now, n->cfg_challenge);
+    n->cfg_until = now + IOB_CFG_WINDOW_MS;
+    return 0;
+}
+
+/* FC16 to IOB_R_CFG_ADDR: new address, challenge, check. 0 (and *addr set) or an exception code. */
+static uint8_t cfg_commit(node_t *n, uint32_t now, const uint8_t *d, uint8_t *addr)
+{
+    uint16_t a = get16(d), ch = get16(d + 2);
+    uint32_t chk = (uint32_t)get16(d + 4) << 16 | get16(d + 6);
+    uint16_t want = n->cfg_challenge;
+    cfg_end(n);                                              /* every outcome ends the unlock */
+    if (a == 0 || a > IOB_ADDR_MAX) return 3;
+    if (!want || ch != want) return 4;
+    if (chk != iob_cfg_check(n->uid, ch, a)) {
+        if (++n->cfg_fails >= 3u) { n->cfg_fails = 0; n->cfg_locked_out = true; n->cfg_lock_until = now + IOB_CFG_LOCKOUT_MS; }
+        return 4;
+    }
+    n->cfg_fails = 0;
+    if (n->hw->addr_store(n->hw->ctx, (uint8_t)a) != NODE_HW_OK) return 4;
+    n->nv_fault = false;
+    *addr = (uint8_t)a;
+    return 0;
+}
+
+/* FC16 to IOB_R_SERIAL over USB: printable ASCII, NUL padded, at least one character */
+static uint8_t serial_write(node_t *n, node_port_t port, const uint8_t *d)
+{
+    if (port != NODE_PORT_USB) return 2;
+    bool set = false;
+    for (unsigned i = 0; i < 16u; i++) set = set || n->serial[i] != 0;
+    if (set && !n->serial_written) return 2;                 /* permanent once powered off with it */
+    bool end = false;
+    for (unsigned i = 0; i < 16u; i++) {
+        uint8_t ch = d[i];
+        if (ch == 0) { end = true; continue; }
+        if (end || ch < 0x20u || ch > 0x7Eu) return 3;
+    }
+    if (d[0] == 0) return 3;
+    if (n->hw->serial_store(n->hw->ctx, d) != NODE_HW_OK) return 4;
+    memcpy(n->serial, d, 16);
+    n->serial_written = true;
+    return 0;
+}
+
 /* ---------------- frames ---------------- */
 
 static uint16_t finish(uint8_t *tx, uint16_t len)
@@ -415,15 +479,31 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
         return 0;
     }
     uint8_t addr = rx[0];
-    bool mine = port == NODE_PORT_RS485 ? (n->address != 0 && addr == n->address)          /* FW-02 */
-                                        : (addr == NODE_USB_ADDRESS || (n->address != 0 && addr == n->address));
+    bool commissioning = port == NODE_PORT_RS485 && n->address == 0;
+    bool mine = port == NODE_PORT_RS485
+                ? (commissioning ? addr == IOB_COMMISSION_ADDR : addr == n->address)              /* FW-02 */
+                : (addr == NODE_USB_ADDRESS || (n->address != 0 && addr == n->address));
     if (!mine) return 0;                     /* another node, or a broadcast: never answered */
     n->act_pulses++;
-    if (port == NODE_PORT_RS485) { n->comms_seen = true; n->last_comms_ms = now; }   /* FW-58 */
+    if (port == NODE_PORT_RS485 && !commissioning) { n->comms_seen = true; n->last_comms_ms = now; }   /* FW-58 */
     uint8_t fc = rx[1];
     uint16_t a = 0, c = 0;
     if (len >= 6u) { a = get16(rx + 2); c = get16(rx + 4); }
     uint16_t out = 0;
+    /* FW-61, FW-62: the whole-block writes with their own rules */
+    if (fc == 16 && len >= 9u && ((a == IOB_R_CFG_UNLOCK && c == 7u) || (a == IOB_R_CFG_ADDR && c == 4u) ||
+                                  (a == IOB_R_SERIAL && c == IOB_SERIAL_REGS))) {
+        uint8_t e, new_addr = 0;
+        if (rx[6] != 2u * c || len != 9u + 2u * c) e = 3;
+        else if (a == IOB_R_CFG_UNLOCK) e = cfg_unlock(n, now, rx + 7);
+        else if (a == IOB_R_CFG_ADDR) e = cfg_commit(n, now, rx + 7, &new_addr);
+        else e = serial_write(n, port, rx + 7);
+        if (e) out = exception(tx, addr, fc, e);
+        else { memcpy(tx, rx, 6); out = finish(tx, 6); }
+        if (new_addr) n->address = new_addr;                 /* the reply still comes from the old one */
+        n->replies++;
+        return out;
+    }
     switch (fc) {
     case 3: case 4:
         out = len == 8u ? read_regs(n, port, tx, addr, fc, a, c) : exception(tx, addr, fc, 3);

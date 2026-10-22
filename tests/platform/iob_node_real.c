@@ -41,6 +41,7 @@ static void push(iob_node_t *n, shadow_t *s)
     h->a_internal_fault = n->out_a_chip_fault;
     node_t *m = &s->me;
     m->address = n->address;
+    memcpy(m->serial, n->serial, sizeof m->serial);
     m->magic = n->magic; m->map_version = n->map_version;
     m->n_out_a = n->n_out_a; m->n_out_b = n->n_out_b; m->n_relays = n->n_relays; m->n_inputs = n->n_inputs;
     m->fw_version = n->fw_version; m->hw_rev = n->hw_rev; m->fw_build = 1;
@@ -58,6 +59,9 @@ static void pull(iob_node_t *n, const shadow_t *s)
     n->last_write_ms = m->last_write_ms;
     n->comms_seen = m->comms_seen; n->comms_lost = m->comms_lost; n->last_comms_ms = m->last_comms_ms;
     n->in_rep = m->in_rep; n->in_pend = m->in_pend;
+    n->address = m->address;                         /* the handshake may have changed it */
+    n->cfg_challenge = m->cfg_challenge; n->cfg_until = m->cfg_until; n->cfg_lock_until = m->cfg_lock_until;
+    n->cfg_unlocks = m->cfg_unlocks; n->cfg_fails = m->cfg_fails; n->cfg_locked_out = m->cfg_locked_out;
     n->rx_errors = m->rx_errors; n->resets = m->resets;
     n->frames = m->frames; n->replies = m->replies; n->writes0 = m->writes0;
 }

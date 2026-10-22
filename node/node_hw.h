@@ -53,6 +53,8 @@ typedef struct node_hw {
     void (*relays)(void *ctx, uint8_t relays);             /* bits 0-1 */
     /* the node's address in the board's F-RAM (FW-60): written and read back; NODE_HW_* */
     int  (*addr_store)(void *ctx, uint8_t address);
+    /* the board's serial number in the F-RAM (FW-62): 16 bytes, written and read back; NODE_HW_* */
+    int  (*serial_store)(void *ctx, const uint8_t serial[16]);
 } node_hw_t;
 
 #endif

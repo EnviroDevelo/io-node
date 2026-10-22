@@ -66,11 +66,18 @@ static int addr_store(void *ctx, uint8_t a)
     if (s->addr_store_rc == NODE_HW_OK) s->stored_address = a;
     return s->addr_store_rc;
 }
+static int serial_store(void *ctx, const uint8_t sn[16])
+{
+    sim_hw_t *s = ctx;
+    s->serial_stores++;
+    if (s->serial_store_rc == NODE_HW_OK) memcpy(s->stored_serial, sn, 16);
+    return s->serial_store_rc;
+}
 
 void sim_hw_init(sim_hw_t *s)
 {
     memset(s, 0, sizeof *s);
     s->field_a = s->field_b = true;
     s->hw = (node_hw_t){ s, a_config, a_write, a_diag, in_config, in_read,
-                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays, addr_store };
+                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays, addr_store, serial_store };
 }
