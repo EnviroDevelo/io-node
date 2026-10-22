@@ -1,8 +1,10 @@
 /* drivers.h - the I/O board's chip drivers, assembled into the node_hw_t the core uses.
  *
- *   drv_iso2h823.c  bank A, Infineon ISO2H823V2.5, SPI mode 3 frames (24-bit with CRC-5)
- *   drv_iso1i813t.c inputs, Infineon ISO1I813T, SPI 8-bit frames
- *   drv_iso808.c    bank B, ST ISO808-1, 8 parallel inputs, SYNC, LOAD, watchdog, FAULT
+ *   drv_iso2h823.c  bank A, Infineon ISO2H823V2.5, SPI (24-bit frames with CRC-5)   - checked against its datasheet
+ *   drv_iso1i813t.c inputs, Infineon ISO1I813T, SPI (24-bit frames with CRC-5)        - checked against its datasheet
+ *   drv_iso808.c    bank B, ST ISO808A-1, SPI (8-bit frames), FAULT and PGOOD pins - checked against its datasheet
+ * All three share the node's SPI bus, each with its own chip select, SPI mode 0, at most 5 MHz
+ * (the ISO1I813T's limit; the ISO2H823 allows 6, the ISO808A-1 20).
  *
  * DATASHEET STATUS. A driver whose register-level details have not been checked against the
  * chip's datasheet is built in its fail-safe form: it reports "no answer" and drives nothing, so
@@ -15,13 +17,13 @@
 #include "node_hw.h"
 
 #ifndef ISO2H823_CONFIRMED
-#define ISO2H823_CONFIRMED 0
+#define ISO2H823_CONFIRMED 1      /* datasheet Rev 2.1, 2024-11-01 */
 #endif
 #ifndef ISO1I813T_CONFIRMED
-#define ISO1I813T_CONFIRMED 0
+#define ISO1I813T_CONFIRMED 1     /* datasheet V2.2, 2017-01-03 */
 #endif
 #ifndef ISO808_CONFIRMED
-#define ISO808_CONFIRMED 0
+#define ISO808_CONFIRMED 1        /* ISO808A-1 datasheet DS14170 Rev 6, July 2025 */
 #endif
 
 #if defined(NODE_PRODUCT_BUILD) && !(ISO2H823_CONFIRMED && ISO1I813T_CONFIRMED && ISO808_CONFIRMED)
@@ -29,6 +31,9 @@
 #endif
 
 const node_hw_t *drivers_hw(void);
+
+/* CRC-5 of the ISOFACE chips' SPI mode 3 over the first nbits, MSB first (isoface_crc5.c) */
+uint8_t isoface_crc5(const uint8_t *data, unsigned nbits);
 
 /* the individual drivers (node_hw_t signatures, ctx unused) */
 int  iso2h823_config(void *ctx, uint8_t ol_enable);

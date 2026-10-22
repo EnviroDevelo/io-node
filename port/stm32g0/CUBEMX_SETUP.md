@@ -26,20 +26,19 @@ outputs off before this code runs, HW-05). Inputs as listed.
 |---|---|---|
 | `HEALTHY` | GPIO output | feeds the monostable (HW-04); toggled every loop pass |
 | `LED_ACT`, `LED_FAULT` | GPIO output | |
-| `CS_A`, `CS_IN` | GPIO output, **initial level high** | chip selects for bank A and the input chip |
+| `CS_A`, `CS_IN`, `CS_B` | GPIO output, **initial level high** | chip selects: bank A (ISO2H823V2.5), inputs (ISO1I813T), bank B (ISO808A-1) |
 | `DIP1`..`DIP4` | GPIO input, pull-up | switch ON connects to 0 V; DIP1 = address bit 0 |
 | `HWREV0`, `HWREV1` | GPIO input, pull-up | straps to 0 V; HW_REV = 1 + value |
-| `B_IN1`..`B_IN8` | GPIO output | bank B parallel inputs |
-| `B_SYNC`, `B_LOAD`, `B_WD` | GPIO output | levels per the ISO808 datasheet (open item) |
-| `B_FAULT` | GPIO input, no pull | open drain, pulled up on the board, active low |
-| `B_SUPPLY` | GPIO input | only if the opto-isolated supply sense is fitted; leave the label out otherwise |
+| `B_FAULT` | GPIO input, no pull | ISO808A-1 FAULT: open drain, pulled up on the board, active low |
+| `B_PGOOD` | GPIO input, no pull | ISO808A-1 PGOOD: open drain, pulled up on the board, low = field supply B not good |
 | `RELAY1`, `RELAY2` | GPIO output | MOSFET gates |
 | `VBUS_SENSE` | GPIO input, no pull | divided USB VBUS |
 
 ## 4. Peripherals
 
-- **SPI1**: Full-Duplex Master, 8 bits, MSB first, NSS software, prescaler for the chips' maximum
-  clock (open item; start at /32 = 2 MHz). The driver sets CPOL/CPHA per chip.
+- **SPI1**: Full-Duplex Master, 8 bits, MSB first, NSS software, CPOL low, CPHA 1 edge (SPI mode
+  0, all three chips), prescaler /16 = 4 MHz (the ISO1I813T allows 5 MHz, the ISO2H823V2.5 6 MHz,
+  the ISO808A-1 20 MHz).
 - **USART1**: Asynchronous, **Hardware Flow Control (RS485)** (its DE pin becomes an alternate
   function), 115200, 8 bits, none, 1 stop, FIFO mode **disabled**, Advanced: nothing else.
   RX pin **pull-up** (the transceiver's RO is off while the node transmits).

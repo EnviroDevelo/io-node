@@ -14,7 +14,7 @@ INC     = -Inode -Idrivers -Iport/stm32g0 -Itests -I$(PLAT)/platform/include -I$
 BUILD   = build
 
 NODE_SRC = node/node.c $(PLAT)/platform/core/mb_rtu.c
-TEST_SRC = tests/test_main.c tests/test_node.c tests/test_diff.c tests/test_drv.c tests/sim_hw.c tests/host_port.c $(PLAT)/platform/bsp/iob_node_sim.c
+TEST_SRC = tests/test_main.c tests/test_node.c tests/test_diff.c tests/test_drv.c tests/sim_hw.c tests/host_port.c tests/sim_chips.c $(PLAT)/platform/bsp/iob_node_sim.c
 DRV_SRC  = $(wildcard drivers/*.c)
 HDRS     = $(wildcard node/*.h drivers/*.h tests/*.h port/stm32g0/node_port.h) $(PLAT)/platform/include/iobus.h $(PLAT)/platform/include/mb_rtu.h
 

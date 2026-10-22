@@ -112,8 +112,8 @@ int port_spi_xfer(port_cs_t cs, uint8_t mode, const uint8_t *tx, uint8_t *rx, ui
     }
     s->CR2 |= SPI_CR2_FRXTH;                                        /* RXNE on every byte */
     s->CR1 |= SPI_CR1_SPE;
-    GPIO_TypeDef *port = cs == PORT_CS_BANK_A ? CS_A_GPIO_Port : CS_IN_GPIO_Port;
-    uint16_t pin = cs == PORT_CS_BANK_A ? CS_A_Pin : CS_IN_Pin;
+    GPIO_TypeDef *port = cs == PORT_CS_BANK_A ? CS_A_GPIO_Port : cs == PORT_CS_BANK_B ? CS_B_GPIO_Port : CS_IN_GPIO_Port;
+    uint16_t pin = cs == PORT_CS_BANK_A ? CS_A_Pin : cs == PORT_CS_BANK_B ? CS_B_Pin : CS_IN_Pin;
     int rc = 0;
     pin_set(port, pin, false);
     for (uint16_t i = 0; i < n && rc == 0; i++) {
@@ -132,33 +132,8 @@ int port_spi_xfer(port_cs_t cs, uint8_t mode, const uint8_t *tx, uint8_t *rx, ui
     return rc;
 }
 
-void port_bank_b_inputs(uint8_t o)
-{
-    pin_set(B_IN1_GPIO_Port, B_IN1_Pin, o & 0x01u); pin_set(B_IN2_GPIO_Port, B_IN2_Pin, o & 0x02u);
-    pin_set(B_IN3_GPIO_Port, B_IN3_Pin, o & 0x04u); pin_set(B_IN4_GPIO_Port, B_IN4_Pin, o & 0x08u);
-    pin_set(B_IN5_GPIO_Port, B_IN5_Pin, o & 0x10u); pin_set(B_IN6_GPIO_Port, B_IN6_Pin, o & 0x20u);
-    pin_set(B_IN7_GPIO_Port, B_IN7_Pin, o & 0x40u); pin_set(B_IN8_GPIO_Port, B_IN8_Pin, o & 0x80u);
-}
-
-void port_bank_b_pin(port_bpin_t p, bool v)
-{
-    switch (p) {
-    case PORT_B_SYNC: pin_set(B_SYNC_GPIO_Port, B_SYNC_Pin, v); break;
-    case PORT_B_LOAD: pin_set(B_LOAD_GPIO_Port, B_LOAD_Pin, v); break;
-    case PORT_B_WD:   pin_set(B_WD_GPIO_Port, B_WD_Pin, v); break;
-    }
-}
-
 bool port_bank_b_fault(void) { return !pin_get(B_FAULT_GPIO_Port, B_FAULT_Pin); }    /* open drain, active low */
-
-bool port_bank_b_supply(void)
-{
-#ifdef B_SUPPLY_Pin
-    return pin_get(B_SUPPLY_GPIO_Port, B_SUPPLY_Pin);
-#else
-    return true;                     /* no opto sense fitted: bank B's supply comes from its chip's status */
-#endif
-}
+bool port_bank_b_pgood(void) { return pin_get(B_PGOOD_GPIO_Port, B_PGOOD_Pin); }     /* open drain, low = supply not good */
 
 void port_relays(uint8_t r)
 {

@@ -1,7 +1,7 @@
 # iob-node: CEMS I/O board node firmware
 
 Firmware for the CEMS Supervisor I/O board's own controller (STM32G0B1CET6): a Modbus RTU slave on
-RS-485 that drives 8 outputs of 0.6 A (bank A, ISO2H823V2.5), 8 outputs of 1 A (bank B, ISO808-1)
+RS-485 that drives 8 outputs of 0.6 A (bank A, ISO2H823V2.5), 8 outputs of 1 A (bank B, ISO808A-1)
 and 2 relays, reads 8 isolated inputs (ISO1I813T), and turns everything off by itself when the main
 board goes quiet.
 
@@ -16,15 +16,15 @@ reference this firmware is compared against byte for byte.
 | Path | What |
 |---|---|
 | `node/node.c`, `node.h` | The core: register map, Modbus slave (functions 03, 04, 06, 16, 23), write rules, hold time, gate, HEALTHY condition, chip health, USB rules. Pure C, no hardware. |
-| `node/node_hw.h` | What the core needs from the board: the three chips, bank B pins and relays. |
-| `drivers/` | Chip drivers (see "Datasheet status"). |
+| `node/node_hw.h` | What the core needs from the board: the three chips, bank B's status pins and the relays. |
+| `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
 | `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, DIP switch, straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
 | `tests/` | Host tests (below). `tests/platform/iob_node_real.c` puts this firmware in place of the platform's simulated node. |
 
 ## Building and testing
 
 ```
-make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, drivers
+make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, the chip drivers against frame-level chip models
 make master-test   # the platform's whole host suite with every simulated I/O board replaced by this firmware
 make target        # arm-none-eabi-gcc: compile and link for the STM32G0B1 against ST's HAL headers
 ```
@@ -36,10 +36,10 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 309 checks, 0 failed |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 449 checks, 0 failed (node 289, comparison 11, drivers and the whole board on them 149) |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
 | `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
-| `make target` | Compiles and links with -Werror for Cortex-M0+: 6.8 KB flash, 3.5 KB RAM (of 256 KB and 144 KB), chip drivers in their fail-safe form |
+| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.0 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
 
 ## Main loop (port/stm32g0/node_main.c)
@@ -50,22 +50,48 @@ USART's 1.75 ms receiver timeout ends them, so the reply starts about 1.8 ms aft
 HEALTHY and the watchdog are touched nowhere else, so a stuck loop drops the hardware gate within
 about 50 ms and resets the node within about 100 ms.
 
-## Datasheet status
+## Chip drivers
 
-Neither this workspace nor the PC could download the chips' datasheets, so the drivers are built in
-a **fail-safe form**: bank A and the input chip report "no answer" (OUT_A_CHIP, IN_CHIP), bank B's
-inputs are held low, and the node's gate never opens. A product build (`NODE_PRODUCT_BUILD`)
-refuses to compile until each driver is filled in and marked confirmed in `drivers/drivers.h`.
-What is known so far is in each driver's header comment, with its source.
+All three share SPI1 (mode 0, 4 MHz; the ISO1I813T's limit is 5 MHz), each with its own chip select.
+Each driver's header comment cites the datasheet sections it follows.
+
+| Chip | Datasheet | Driver | What it does |
+|---|---|---|---|
+| ISO2H823V2.5 (bank A) | Rev 2.1, 2024-11-01 | `drv_iso2h823.c` | SPI mode 3 of the chip: 24-bit frames with CRC-5 both ways. Config: version check (GLERR 0100b), power-up flags read away, DIAGCFG FFh, GLCFG LEDGOFF (+OLOFF if no channel is checked), all read back. DRIVE written every 1 ms pass. Every 5 ms: COLDIAG, then DIAGx of flagged channels, GLERR, INTERR. |
+| ISO1I813T (inputs) | V2.2, 2017-01-03 | `drv_iso1i813t.c` | SPI mode 3 of the chip, same frame and CRC. Config: 8 COEFIL registers (filter + wire-break mask), read back. Every 2 ms: DIAG (the reply also carries the inputs and UV), INTERR. |
+| ISO808A-1 (bank B) | DS14170 Rev 6, July 2025 | `drv_iso808.c` | One 8-bit frame of output states every 1 ms pass, SS high 20 us after it. FAULT and PGOOD pins. Nothing to service: the chip's watchdog is internal. |
+
+How the chips' diagnostics become the node's registers:
+
+| Register | From |
+|---|---|
+| A_OPEN | OLA (open, channel on) or OLI (open, channel off); masked by OL_ENABLE |
+| A_OVERLOAD | OCL (current limit), or SCV (short to 24 V) when no open load was seen in the same read: an unplugged valve with the 12 nF output capacitor also shows SCV briefly after switching off (ISO2H823 table 10) |
+| A_OVERTEMP | OT |
+| OUT_A_CHIP | no answer or bad CRC twice in a row, configuration read back wrong, package over-temperature (OTP), or isolation transmission errors (TE) in two reads in a row |
+| FIELD_A_OK | neither chip reports UV (VBB below 16 V on bank A, 15 to 17 V on the inputs) nor its far side not ready (W4P, W4S) |
+| INPUTS, WIREBREAK | INPDATA and DIAG of the input chip; FILTER_MS to the nearest filter at or above (0 bypass, 1 → 1.6 ms, 2-3 → 3.2 ms, 4-10 → 10 ms, 11-100 → 20 ms, the longest): the default 8 ms is 10 ms |
+| IN_CHIP | no answer or bad CRC twice in a row, configuration read back wrong, TE in two reads in a row |
+| B_FAULT bit 0 | the ISO808A-1 FAULT pin, debounced 1 ms (over-temperature, a bad SPI frame, an isolation error) |
+| B_FAULT bit 1 | always 0: the ISO808A-1's watchdog cannot be seen from outside |
+| FIELD_B_OK | the ISO808A-1 PGOOD pin (off at 14.5 to 16.1 V, on at 16.6 to 18.7 V) |
+
+### Board strapping these drivers assume
+
+| Chip | Pins |
+|---|---|
+| ISO2H823V2.5 | SEL high, MS0 and MS1 high, SYNC high, **ALE/RST low** (high with /CS low for 100 us resets the chip), /ODIS from the safe-state gate, /CRCERR and /ERR may be left unconnected |
+| ISO1I813T | SEL high, MS0 and MS1 high, SSI low, SYNC high, DC_ENA low, ROSC 22.1 kOhm (the filter times are for its nominal 500 kHz) |
+| ISO808A-1 | SS, CLK, SDI, SDO on the node's SPI bus; **OUT_EN from the safe-state gate**; FAULT and PGOOD open drain, pulled up to 3.3 V, to controller pins |
 
 ## Requirement trace
 
 | Req | Where | Tested |
 |---|---|---|
-| FW-01 | `node_init` (all off, gate closed); HEALTHY only from `node_healthy` | `t_startup`, `t_fail_safe` |
+| FW-01 | `node_init` (all off, gate closed); HEALTHY only from `node_healthy` | `t_startup`, `t_board` |
 | FW-02 | `board_boot_info` (DIP once); `node_frame` (DIP 0 never answers); `node_addr_led_blink` | `t_rules` |
 | FW-03 | `node_init` defaults, WDG_RESET from the reset cause; `reset_cause` clears the flags | `t_startup` |
-| FW-04 | `config_a` / `config_in` before anything opens; retry every 1 s | `t_chips` |
+| FW-04 | `config_a` / `config_in` before anything opens; retry every 1 s; drivers read every setting back | `t_chips`, `t_iso2h823`, `t_iso1i813t` |
 | FW-10, 11 | `rs485_g0.c` receiver timeout 202 bit times; reply from the main loop | target build; AT-03 on the bench |
 | FW-12 | `node_frame` drops and counts; `rs485_irq` marks FE/NE/ORE | `t_rules`, comparison |
 | FW-13 | `rs485_init`: CR3.DEM | target build |
@@ -74,11 +100,11 @@ What is known so far is in each driver's header comment, with its source.
 | FW-21 | `hold_check` every 1 ms pass and before every frame | `t_hold` (incl. 10 min and the 2^32 ms wrap) |
 | FW-22 | `node_healthy` (gate open, not entering the bootloader; a bank A fault does not stop it); `node_main` toggles once per pass | `t_chips`, `t_hold` |
 | FW-23 | `board_iwdg_start` (100 ms), refreshed only in `node_main` | target build; AT-07 |
-| FW-24 | `node_poll`: `b_wdg_service` only while the gate is open | `t_outputs`, `t_hold` (servicing itself: datasheet) |
+| FW-24 | Nothing to service on the ISO808A-1 (its watchdog is internal, DS14170 6.5.1) | `t_iso808a` |
 | FW-25 | `apply_outputs` (relays follow RELAY_CMD, off with the gate) | `t_outputs`, `t_hold` |
 | FW-26 | only a write of register 0 opens the gate | `t_hold` |
-| FW-30..32 | input read every 2 ms; masks; 0 without supply A | `t_chips` |
-| FW-40..43 | diagnostics every 5 ms; present state; FAULT 1 ms debounce; two failures | `t_chips` |
+| FW-30..32 | input read every 2 ms; filter mapping; masks; 0 without supply A | `t_chips`, `t_iso1i813t`, `t_board` |
+| FW-40..43 | diagnostics every 5 ms; present state; FAULT 1 ms debounce; two failures | `t_chips`, `t_iso2h823`, `t_board` |
 | FW-44 | FAULT_CLEAR clears TIMEOUT and WDG_RESET only | `t_hold` |
 | FW-50 | static 256-byte buffers, no heap | code |
 | FW-51 | `node_reg`, reserved read 0 | `t_startup`, comparison |
@@ -119,8 +145,14 @@ With healthy chips the two are byte-identical. They differ where the simulator h
 
 ## Open items
 
-1. **Datasheets** for the ISO2H823V2.5, ISO1I813T and ISO808-1 (`Firmware\datasheets\`): register
-   maps, SPI modes and clocks, filter coding, wire-break and supply bits, ISO808 SYNC/LOAD and watchdog.
-2. HSI16 accuracy over temperature at 115200 baud (HW-01): bench test, or the crystal footprint.
-3. AN2606 conditions for the G0B1's USB bootloader, and the nBOOT_SEL option byte (CUBEMX_SETUP.md 9).
-4. The RS-485 RX pin needs a pull-up (on the board or the pin's own).
+1. **Bank B board change.** The ISO808A-1 is an SPI device: HW-08 and the pin budget in the
+   requirements are updated (CS_B, PGOOD, FAULT, OUT_EN from the gate; the 8 parallel inputs, SYNC,
+   LOAD and the watchdog pin are gone). The design specification's bank B section still describes
+   parallel inputs and SYNC/LOAD.
+2. On the bench: the ISO808A-1 channel order (bit 0 = OUT1 assumed), the ISO2H823 reply CRC (same
+   engine as the request assumed, as the datasheet describes), the OLADJ value for a VX21 coil.
+3. HSI16 accuracy over temperature at 115200 baud (HW-01): bench test, or the crystal footprint.
+4. AN2606 conditions for the G0B1's USB bootloader, and the nBOOT_SEL option byte (CUBEMX_SETUP.md 9).
+5. The RS-485 RX pin needs a pull-up (on the board or the pin's own).
+6. ISO2H823 datasheet inconsistency: GLERR.MV is "1 = no missing voltage" in table 5.1.4 but "1 =
+   missing" in 3.2.3 and the reset value; the driver does not use MV (UV at 16 V trips first).
