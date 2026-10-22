@@ -37,32 +37,13 @@ static uint16_t pick_val(uint16_t r)
     }
 }
 
-static const uint16_t *diff_uid;          /* the node's UID, for real unlocks */
-static uint16_t diff_challenge;          /* the last challenge read back */
-
 static size_t make_frame(uint8_t *f, uint8_t addr)
 {
-    if (rnd(40) == 0) {                   /* FW-61: the address handshake, right and wrong */
-        uint16_t v[7];
-        static unsigned phase;            /* mostly in order: unlock, read, commit */
-        unsigned step = rnd(5) ? phase++ % 3u : rnd(3);
-        switch (step == 2 ? 2 + rnd(2) : step) {
-        case 0:                           /* unlock, sometimes with a wrong UID word */
-            v[0] = IOB_CFG_UNLOCK_KEY;
-            for (int i = 0; i < 6; i++) v[1 + i] = diff_uid[i];
-            if (rnd(4) == 0) v[1 + rnd(6)] ^= 1u;
-            return mbr_req_write(f, addr, IOB_R_CFG_UNLOCK, v, 7);
-        case 1:
-            return mbr_req_read(f, addr, IOB_R_CFG_UNLOCK, 1);
-        default: {                        /* commit: mostly to the same address, right or wrong check */
-            uint16_t na = rnd(8) ? addr : (uint16_t)(1 + rnd(250));
-            uint16_t ch = rnd(5) ? diff_challenge : (uint16_t)rnd(65536);
-            uint32_t chk = iob_cfg_check(diff_uid, ch, na);
-            if (rnd(2) == 0) chk ^= 1u << rnd(32);
-            v[0] = na; v[1] = ch; v[2] = (uint16_t)(chk >> 16); v[3] = (uint16_t)chk;
-            return mbr_req_write(f, addr, IOB_R_CFG_ADDR, v, 4);
-        }
-        }
+    if (rnd(40) == 0) {                   /* FW-61: the address change, right and wrong */
+        uint16_t na = rnd(8) ? addr : (uint16_t)(1 + rnd(250));
+        uint16_t v[3] = { rnd(4) ? IOB_ADDR_SET_KEY : (uint16_t)rnd(65536), na, (uint16_t)(na ^ 0xFFFFu) };
+        if (rnd(4) == 0) v[2] ^= (uint16_t)(1u << rnd(16));
+        return mbr_req_write(f, addr, IOB_R_ADDR_SET, v, 3);
     }
     uint16_t v[125];
     size_t len = 0;
@@ -115,10 +96,9 @@ void test_diff(void)
     me.resets = ref.resets;
 
     uint8_t f[300], t1[300], t2[NODE_FRAME_MAX];
-    diff_uid = ref.uid;
     memcpy(ref.serial, "CIO-TEST-0001", 13);                   /* the same serial on both */
     memcpy(me.serial, ref.serial, 16);
-    long unlocks = 0, commits_ok = 0, lockouts = 0;
+    long addr_changes = 0, addr_refused = 0;
     long frames = 0, replies = 0, mism_reply = 0, mism_reg = 0, exceptions = 0, timeouts = 0, gate_opened = 0;
     long comms_lost = 0, comms_cleared = 0, held = 0;
     for (long step = 0; step < 200000; step++) {
@@ -148,10 +128,7 @@ void test_diff(void)
         uint16_t r1 = iob_node_frame(&ref, now, f, (uint16_t)len, t1, sizeof t1);
         uint16_t r2 = node_frame(&me, NODE_PORT_RS485, now, f, (uint16_t)len, false, t2);
         frames++;
-        if (r1 > 6 && f[1] == 3 && f[3] == IOB_R_CFG_UNLOCK && !(t1[1] & 0x80)) diff_challenge = (uint16_t)(t1[3] << 8 | t1[4]);
-        if (r1 == 8 && f[1] == 16 && f[3] == IOB_R_CFG_UNLOCK) unlocks++;
-        if (r1 == 8 && f[1] == 16 && f[3] == IOB_R_CFG_ADDR) commits_ok++;
-        if (ref.cfg_locked_out) lockouts++;
+        if (f[1] == 16 && f[3] == IOB_R_ADDR_SET && len == 15) { if (r1 == 8) addr_changes++; else if (r1 == 5) addr_refused++; }
         if (r1) replies++;
         if (r1 >= 3 && (t1[1] & 0x80)) exceptions++;
         if (!was_open && me.gate) gate_opened++;
@@ -187,13 +164,11 @@ void test_diff(void)
     CHECK(comms_lost > 1000);
     CHECK(comms_cleared > 100);
     CHECK(held > 100);
-    CHECK(unlocks > 100);
-    CHECK(commits_ok > 10);
-    CHECK(lockouts > 0);
+    CHECK(addr_changes > 100);
+    CHECK(addr_refused > 100);
     CHECK_EQ(me.address, ref.address);
     printf("  diff: %ld frames, %ld replies, %ld exceptions, %u writes of register 0, %u CRC/runt errors, gate opened %ld times,\n"
            "        comms lost latched in %ld steps and cleared %ld times, an input change waiting to be shown in %ld steps\n",
            frames, replies, exceptions, (unsigned)me.writes0, (unsigned)me.rx_errors, gate_opened, comms_lost, comms_cleared, held);
-    printf("        address handshake: %ld unlocks, %ld address changes, locked out in %ld steps; address now %u\n",
-           unlocks, commits_ok, lockouts, (unsigned)ref.address);
+    printf("        address change: %ld accepted, %ld refused; address now %u\n", addr_changes, addr_refused, (unsigned)ref.address);
 }

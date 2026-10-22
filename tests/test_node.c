@@ -646,112 +646,75 @@ static void t_address(void)
     CHECK(!node_fault_led(&n));
 }
 
-/* FW-61: the address over RS-485, only through the handshake */
-static int unlock(uint8_t addr, const uint16_t *uid, uint16_t key)
+/* FW-61: the address over RS-485, only by one guarded FC16 write of 40-42 */
+static int addr_set_on(node_port_t port, uint8_t addr, uint16_t key, uint16_t a, uint16_t inv)
 {
     uint8_t f[MBR_FRAME_MAX];
-    uint16_t v[7] = { key, uid[0], uid[1], uid[2], uid[3], uid[4], uid[5] };
-    size_t len = mbr_req_write(f, addr, IOB_R_CFG_UNLOCK, v, 7);
-    return xfer(RS, f, len, 0);
+    uint16_t v[3] = { key, a, inv };
+    size_t len = mbr_req_write(f, addr, IOB_R_ADDR_SET, v, 3);
+    return xfer(port, f, len, 0);
 }
-static int commit(uint8_t addr, uint16_t new_addr, uint16_t ch, uint32_t chk)
-{
-    uint8_t f[MBR_FRAME_MAX];
-    uint16_t v[4] = { new_addr, ch, (uint16_t)(chk >> 16), (uint16_t)chk };
-    size_t len = mbr_req_write(f, addr, IOB_R_CFG_ADDR, v, 4);
-    return xfer(RS, f, len, 0);
-}
-static uint16_t challenge(uint8_t addr) { CHECK_EQ(rd(RS, addr, IOB_R_CFG_UNLOCK, 1), MBR_OK); return regs[0]; }
+static int addr_set(uint8_t addr, uint16_t a) { return addr_set_on(RS, addr, IOB_ADDR_SET_KEY, a, (uint16_t)(a ^ 0xFFFFu)); }
 
-static void t_handshake(void)
+static void t_addr_set(void)
 {
     sim_hw_init(&hw);
     boot(5, NODE_RST_POWER_ON, 0);
-    const uint16_t *uid = n.uid;
-    uint16_t bad_uid[6];
-    memcpy(bad_uid, uid, sizeof bad_uid); bad_uid[3] ^= 1u;
-    CHECK_EQ(challenge(5), 0);                                   /* locked */
-    /* a plain write of 38, or anything else into 40..51, is refused */
-    CHECK_EQ(wr1(RS, 5, IOB_R_NODE_ADDR, 9), MBR_EXCEPTION); CHECK_EQ(exc, 2);
-    CHECK_EQ(wr1(RS, 5, IOB_R_CFG_UNLOCK, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 2);
-    uint16_t w2[2] = { 9, 0 };
     uint8_t f[MBR_FRAME_MAX];
-    size_t len = mbr_req_write(f, 5, IOB_R_CFG_ADDR, w2, 2);
+    size_t len;
+    /* a plain write of 38, or anything but the 3-register block into 40-42, is refused (02) */
+    CHECK_EQ(wr1(RS, 5, IOB_R_NODE_ADDR, 9), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(wr1(RS, 5, IOB_R_ADDR_SET, IOB_ADDR_SET_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    uint16_t two[2] = { IOB_ADDR_SET_KEY, 9 };
+    len = mbr_req_write(f, 5, IOB_R_ADDR_SET, two, 2);
     CHECK_EQ(xfer(RS, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 2);
-    /* commit without an unlock, a wrong key, a wrong UID */
-    CHECK_EQ(commit(5, 9, 1, iob_cfg_check(uid, 1, 9)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    CHECK_EQ(unlock(5, uid, 0x1234), MBR_EXCEPTION); CHECK_EQ(exc, 3);
-    CHECK_EQ(unlock(5, bad_uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 3);
-    CHECK_EQ(challenge(5), 0);
+    uint16_t four[4] = { IOB_ADDR_SET_KEY, 9, 0xFFF6, 0 };
+    len = mbr_req_write(f, 5, IOB_R_ADDR_SET, four, 4);
+    CHECK_EQ(xfer(RS, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    uint16_t w3[3] = { 9, 0xFFF6, 0 };
+    len = mbr_req_write(f, 5, IOB_R_ADDR_SET + 1u, w3, 3);
+    CHECK_EQ(xfer(RS, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    uint16_t rw3[3] = { IOB_ADDR_SET_KEY, 9, 0xFFF6 };
+    len = mbr_req_rw(f, 5, IOB_R_STATUS, 1, IOB_R_ADDR_SET, rw3, 3);
+    CHECK_EQ(xfer(RS, f, len, 1), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    /* wrong key, wrong complement, out of range (03): nothing saved */
+    CHECK_EQ(addr_set_on(RS, 5, 0xA55B, 9, 0xFFF6), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(addr_set_on(RS, 5, IOB_ADDR_SET_KEY, 9, 0xFFF7), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(addr_set_on(RS, 5, IOB_ADDR_SET_KEY, 9, 9), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(addr_set(5, 0), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(addr_set(5, IOB_COMMISSION_ADDR), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(addr_set(5, NODE_USB_ADDRESS), MBR_EXCEPTION); CHECK_EQ(exc, 3);
     CHECK_EQ(hw.addr_stores, 0u);
-    /* the full handshake: the reply comes from the old address, the node is at the new one at once */
-    CHECK_EQ(unlock(5, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    uint16_t ch = challenge(5);
-    CHECK(ch != 0);
-    CHECK_EQ(commit(5, 9, ch, iob_cfg_check(uid, ch, 9)), MBR_OK);
+    CHECK_EQ(rd(RS, 5, IOB_R_ADDR_SET, 3), MBR_OK);             /* the block reads 0 */
+    CHECK(regs[0] == 0 && regs[1] == 0 && regs[2] == 0);
+    /* the right write: the reply comes from the old address, the node is at the new one at once */
+    CHECK_EQ(addr_set(5, 9), MBR_OK);
     CHECK_EQ(tx[0], 5);
     CHECK_EQ(hw.stored_address, 9);
     CHECK_EQ(reg(IOB_R_NODE_ADDR), 9);
     len = mbr_req_read(f, 5, IOB_R_MAGIC, 1);
     CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
     CHECK_EQ(rd(RS, 9, IOB_R_MAGIC, 1), MBR_OK);
-    CHECK_EQ(challenge(9), 0);                                   /* used up */
-    CHECK_EQ(commit(9, 10, ch, iob_cfg_check(uid, ch, 10)), MBR_EXCEPTION); CHECK_EQ(exc, 4);   /* no replay */
-    /* while the master is in control and the outputs are on: allowed, outputs untouched */
+    /* with the master in control and the outputs on: allowed, outputs untouched, no comms fault */
     CHECK_EQ(rw(RS, 9, 0x0101, 1, 3), MBR_OK);
-    CHECK_EQ(unlock(9, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    ch = challenge(9);
-    CHECK_EQ(commit(9, 12, ch, iob_cfg_check(uid, ch, 12)), MBR_OK);
+    CHECK_EQ(addr_set(9, 12), MBR_OK);
     CHECK_EQ(hw.a_out, 0x01); CHECK_EQ(hw.relays, 1);
-    CHECK_EQ(rw(RS, 12, 0x0101, 1, 4), MBR_OK);                  /* the master carries on at 12 */
-    /* each new unlock gives a new challenge; an old one is refused */
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    uint16_t c1 = challenge(12);
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    uint16_t c2 = challenge(12);
-    CHECK(c1 != c2 && c2 != 0);
-    CHECK_EQ(commit(12, 13, c1, iob_cfg_check(uid, c1, 13)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    CHECK_EQ(challenge(12), 0);                                  /* and that ended the unlock */
-    /* out of range: 0, 246, 247 (03) */
-    for (int i = 0; i < 3; i++) {
-        uint16_t bad[3] = { 0, IOB_COMMISSION_ADDR, NODE_USB_ADDRESS };
-        CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-        ch = challenge(12);
-        CHECK_EQ(commit(12, bad[i], ch, iob_cfg_check(uid, ch, bad[i])), MBR_EXCEPTION); CHECK_EQ(exc, 3);
-    }
-    /* the window: 10 s */
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    ch = challenge(12);
-    run(IOB_CFG_WINDOW_MS);
-    CHECK_EQ(challenge(12), 0);
-    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    /* 3 wrong check values in a row: locked out for 60 s, even with the right one */
-    for (int i = 0; i < 3; i++) {
-        CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-        ch = challenge(12);
-        CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14) ^ 0x10u), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    }
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    run(IOB_CFG_LOCKOUT_MS - 10u);
-    CHECK_EQ(rw(RS, 12, 0, 0, 5), MBR_OK);
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    run(20);
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    ch = challenge(12);
+    for (int i = 0; i < 100; i++) { run(20); CHECK_EQ(rw(RS, 12, 0x0101, 1, (uint16_t)(4 + i)), MBR_OK); }   /* 2 s of polling at 12 */
+    CHECK(!(status() & IOB_ST_COMMS_LOST));
+    /* the same address again: fine, nothing to save (no wear) */
+    CHECK_EQ(addr_set(12, 12), MBR_OK);
+    /* over USB: refused while the RS-485 master is in control (04), as a direct write of 38 is */
+    CHECK_EQ(addr_set_on(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_ADDR_SET_KEY, 13, (uint16_t)(13 ^ 0xFFFF)), MBR_EXCEPTION);
+    CHECK_EQ(exc, 4);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 12);
     /* the F-RAM save fails: 04, the address stays */
     hw.addr_store_rc = NODE_HW_NO_ANSWER;
-    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(uid, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(addr_set(12, 14), MBR_EXCEPTION); CHECK_EQ(exc, 4);
     CHECK_EQ(reg(IOB_R_NODE_ADDR), 12);
     hw.addr_store_rc = NODE_HW_OK;
-    /* a check made for another board does not work here */
-    uint16_t other[6] = { 1, 2, 3, 4, 5, 6 };
-    CHECK_EQ(unlock(12, uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    ch = challenge(12);
-    CHECK_EQ(commit(12, 14, ch, iob_cfg_check(other, ch, 14)), MBR_EXCEPTION); CHECK_EQ(exc, 4);
-    CHECK_EQ(reg(IOB_R_NODE_ADDR), 12);
 }
 
-/* FW-02, FW-61: a new board (no address) on RS-485 answers at 246: reads and the handshake only */
+/* FW-02, FW-61: a new board (no address) on RS-485 answers at 246: reads and the address change only */
 static void t_commission(void)
 {
     sim_hw_init(&hw);
@@ -769,9 +732,7 @@ static void t_commission(void)
     CHECK(!(status() & IOB_ST_COMMS_LOST));
     CHECK(node_comms_led(&n, now));                              /* steady on: not set */
     /* give it an address */
-    CHECK_EQ(unlock(IOB_COMMISSION_ADDR, n.uid, IOB_CFG_UNLOCK_KEY), MBR_OK);
-    uint16_t ch = challenge(IOB_COMMISSION_ADDR);
-    CHECK_EQ(commit(IOB_COMMISSION_ADDR, 3, ch, iob_cfg_check(n.uid, ch, 3)), MBR_OK);
+    CHECK_EQ(addr_set(IOB_COMMISSION_ADDR, 3), MBR_OK);
     CHECK_EQ(tx[0], IOB_COMMISSION_ADDR);
     CHECK_EQ(hw.stored_address, 3);
     uint8_t f[MBR_FRAME_MAX];
@@ -837,7 +798,7 @@ void test_node(void)
     t_comms();
     t_inputs_hold();
     t_address();
-    t_handshake();
+    t_addr_set();
     t_commission();
     t_serial();
 }

@@ -41,10 +41,10 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 902 checks, 0 failed (node 614, comparison 18, drivers, F-RAM records and the whole board on them 270) |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 953 checks, 0 failed (node 666, comparison 17, drivers, F-RAM records and the whole board on them 270) |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
-| `make master-test` | 13,993 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, latched comms fault, short input openings, address handshake and commissioning, node restart, hold time) |
-| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 10.6 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
+| `make master-test` | 13,993 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, latched comms fault, short input openings, address change and commissioning, node restart, hold time) |
+| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 10.3 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
 
 ## AT-13 on a board: tools/at13.py
@@ -84,11 +84,12 @@ python tools\set_address.py COM7 --clear       # 0: answers on RS-485 only at 24
 python tools\set_address.py COM7 --serial CIO-26-00042   # production: permanent after the next power-off
 ```
 
-Over RS-485 the address changes only through the handshake in the platform's `iobus.h` (FW-61),
-which the main board's browser pages use: unlock with a key and the board's own unique ID, read a
-one-time challenge, commit with a check value no other Modbus master can produce. A board without
-an address answers on RS-485 at 246, for reads and that handshake only, so a new board can be
-added from the browser (one new board on the bus at a time).
+Over RS-485 the address changes only through one guarded write (FW-61): an FC16 of registers 40-42
+holding the key 0xA55A, the new address and the new address XOR 0xFFFF. Anything else written
+there is refused and changes nothing, so no other Modbus master changes an address by accident.
+The main board's browser pages use it. A board without an address answers on RS-485 at 246, for
+reads and that write only, so the main board can find a new board by scanning and give it an
+address (one new board on the bus at a time).
 
 The board refuses a change (04) while the main board is controlling it: unplug RS-485 first.
 
@@ -139,7 +140,7 @@ How the chips' diagnostics become the node's registers:
 | Req | Where | Tested |
 |---|---|---|
 | FW-01 | `node_init` (all off, gate closed); HEALTHY only from `node_healthy` | `t_startup`, `t_board` |
-| FW-02 | `board_boot_info` (address from the F-RAM once); `node_frame` (0 = not set: on RS-485 only at 246, reads and the handshake only); `node_comms_led` steady on | `t_rules`, `t_address`, `t_commission` |
+| FW-02 | `board_boot_info` (address from the F-RAM once); `node_frame` (0 = not set: on RS-485 only at 246, reads and the address change only); `node_comms_led` steady on | `t_rules`, `t_address`, `t_commission` |
 | FW-03 | `node_init` defaults, WDG_RESET from the reset cause; `reset_cause` clears the flags | `t_startup` |
 | FW-04 | `config_a` / `config_in` before anything opens; retry every 1 s; drivers read every setting back | `t_chips`, `t_iso2h823`, `t_iso1i813t` |
 | FW-10, 11 | `rs485_g0.c` receiver timeout 202 bit times; reply from the main loop | target build; AT-03 on the bench |
@@ -165,7 +166,7 @@ How the chips' diagnostics become the node's registers:
 | FW-56 | USB at the node's address or 247; exception 04 while the master is in control | `t_usb` |
 | FW-57 | register 37 over USB; outputs off 100 ms, then a reset into the bootloader | `t_usb`, `t_rules` |
 | FW-60 | register 38 directly over USB only (0..245, 04 while the master is in control); `nvcfg.c` saves it to the F-RAM and reads it back before the reply; 04 and nothing changed if that fails; `board_g0.c` I2C with the write-protect pin released for the write only | `t_address`, `t_nvcfg` (power cut at every byte, 600 saves, spoilt slot, no chip), `t_board_address`; target build |
-| FW-61 | `cfg_unlock`, `cfg_commit`: key + own UID, challenge (`iob_cfg_challenge`), commit with `iob_cfg_check` (platform iobus.h); every outcome ends the unlock; 3 bad checks: 60 s lockout; reply from the old address | `t_handshake`, comparison (unlocks, changes, lockouts); platform `t_node_cfg`; at02 |
+| FW-61 | `addr_set`: ONE FC16 of 40-42 = key 0xA55A, new address, address XOR 0xFFFF; anything else into 40-42 is 02, a wrong key, complement or range 03, a failed save 04; reply from the old address; over USB also 04 while the master is in control | `t_addr_set`, `t_commission`, comparison (accepted and refused changes); platform `t_node_cfg`; at02 |
 | FW-62 | `serial_write` (USB only, printable ASCII, permanent after a power cycle), `nvcfg_store_serial` | `t_serial`, `t_nvcfg` |
 | FW-58 | `node_comms_ok`, `comms_check`: losing the link latches STATUS COMMS_LOST; only FAULT_CLEAR bit 1 or a restart clears it; outputs follow the hold time | `t_comms`, comparison; platform `t_comms_latch` |
 | FW-59 | `node_heartbeat_led`: 1 Hz from the main loop, nothing else | `t_comms`; target build |

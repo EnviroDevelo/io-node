@@ -59,9 +59,7 @@ static void pull(iob_node_t *n, const shadow_t *s)
     n->last_write_ms = m->last_write_ms;
     n->comms_seen = m->comms_seen; n->comms_lost = m->comms_lost; n->last_comms_ms = m->last_comms_ms;
     n->in_rep = m->in_rep; n->in_pend = m->in_pend;
-    n->address = m->address;                         /* the handshake may have changed it */
-    n->cfg_challenge = m->cfg_challenge; n->cfg_until = m->cfg_until; n->cfg_lock_until = m->cfg_lock_until;
-    n->cfg_unlocks = m->cfg_unlocks; n->cfg_fails = m->cfg_fails; n->cfg_locked_out = m->cfg_locked_out;
+    n->address = m->address;                         /* an address change may have moved it */
     n->rx_errors = m->rx_errors; n->resets = m->resets;
     n->frames = m->frames; n->replies = m->replies; n->writes0 = m->writes0;
 }

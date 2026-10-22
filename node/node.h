@@ -54,10 +54,11 @@
  *     while the RS-485 master is in control (04). The new address is saved to the F-RAM and read
  *     back before the reply; if that fails the reply is exception 04 and nothing changes. It takes
  *     effect at once.
- *   - Over RS-485 the address changes only through the handshake in iobus.h (FW-61): unlock with
- *     the key and this board's unique ID, read the challenge, commit with the check value.
+ *   - Over RS-485 the address changes only through ONE FC16 write of 40-42: the key 0xA55A, the
+ *     new address, the new address XOR 0xFFFF (FW-61); anything else there is refused.
  *   - A node without an address answers on RS-485 at 246 (FW-02, commissioning): reads and the
- *     handshake only; every other write is exception 04, and it does not count as the link (FW-58).
+ *     address change only; every other write is exception 04, and it does not count as the link
+ *     (FW-58).
  *   - The serial number (52..59, FW-62) is written over USB only and only until the board has been
  *     powered off once with it set. */
 #ifndef NODE_H
@@ -121,11 +122,6 @@ typedef struct {
     /* state */
     uint8_t  address;               /* from the F-RAM; 0 = not set, never answers on RS-485 */
     bool     nv_fault;              /* the address F-RAM did not answer at start-up */
-    /* FW-61: address change over RS-485 */
-    uint16_t cfg_challenge;         /* 0: locked */
-    uint32_t cfg_until, cfg_lock_until, cfg_unlocks;
-    uint8_t  cfg_fails;
-    bool     cfg_locked_out;
     /* FW-62: serial number */
     uint8_t  serial[16];
     bool     serial_written;        /* written since this start-up: may still be corrected */

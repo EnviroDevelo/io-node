@@ -59,8 +59,6 @@ bool node_heartbeat_led(uint32_t now) { return (now / 500u) % 2u == 0; }
 static void comms_check(node_t *n, uint32_t now)
 {
     if (n->comms_seen && !node_comms_ok(n, now)) n->comms_lost = true;
-    if (n->cfg_challenge && due(now, n->cfg_until)) n->cfg_challenge = 0;              /* FW-61 */
-    if (n->cfg_locked_out && due(now, n->cfg_lock_until)) n->cfg_locked_out = false;
 }
 
 /* FW-33: every change since the last RS-485 read noted. Without field supply A or a healthy
@@ -264,7 +262,6 @@ uint16_t node_reg(const node_t *n, uint16_t r)
     case IOB_R_N_RELAYS: return n->n_relays;
     case IOB_R_N_INPUTS: return n->n_inputs;
     case IOB_R_NODE_ADDR: return n->address;
-    case IOB_R_CFG_UNLOCK: return n->cfg_challenge;
     default:
         if (r >= IOB_R_UID && r < IOB_R_UID + 6u) return n->uid[r - IOB_R_UID];
         if (r >= IOB_R_SERIAL && r < IOB_R_SERIAL + IOB_SERIAL_REGS)
@@ -367,37 +364,15 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
     n->echo = n->seq;
 }
 
-/* ---------------- address handshake and serial number (FW-61, FW-62) ---------------- */
+/* ---------------- address change and serial number (FW-61, FW-62) ---------------- */
 
-static void cfg_end(node_t *n) { n->cfg_challenge = 0; }
-
-/* FC16 to IOB_R_CFG_UNLOCK: the key and this board's unique ID. 0 or an exception code. */
-static uint8_t cfg_unlock(node_t *n, uint32_t now, const uint8_t *d)
+/* FC16 to IOB_R_ADDR_SET: key, new address, new address XOR 0xFFFF. 0 (and *addr set) or an
+ * exception code; nothing is changed unless it is 0. */
+static uint8_t addr_set(node_t *n, node_port_t port, uint32_t now, const uint8_t *d, uint8_t *addr)
 {
-    if (n->cfg_locked_out) { cfg_end(n); return 4; }
-    bool ok = get16(d) == IOB_CFG_UNLOCK_KEY;
-    for (unsigned i = 0; i < 6u; i++) ok = ok && get16(d + 2u + 2u * i) == n->uid[i];
-    if (!ok) { cfg_end(n); return 3; }
-    n->cfg_unlocks++;
-    n->cfg_challenge = iob_cfg_challenge(n->uid, n->cfg_unlocks, now, n->cfg_challenge);
-    n->cfg_until = now + IOB_CFG_WINDOW_MS;
-    return 0;
-}
-
-/* FC16 to IOB_R_CFG_ADDR: new address, challenge, check. 0 (and *addr set) or an exception code. */
-static uint8_t cfg_commit(node_t *n, uint32_t now, const uint8_t *d, uint8_t *addr)
-{
-    uint16_t a = get16(d), ch = get16(d + 2);
-    uint32_t chk = (uint32_t)get16(d + 4) << 16 | get16(d + 6);
-    uint16_t want = n->cfg_challenge;
-    cfg_end(n);                                              /* every outcome ends the unlock */
-    if (a == 0 || a > IOB_ADDR_MAX) return 3;
-    if (!want || ch != want) return 4;
-    if (chk != iob_cfg_check(n->uid, ch, a)) {
-        if (++n->cfg_fails >= 3u) { n->cfg_fails = 0; n->cfg_locked_out = true; n->cfg_lock_until = now + IOB_CFG_LOCKOUT_MS; }
-        return 4;
-    }
-    n->cfg_fails = 0;
+    uint16_t k = get16(d), a = get16(d + 2), inv = get16(d + 4);
+    if (k != IOB_ADDR_SET_KEY || inv != (uint16_t)(a ^ 0xFFFFu) || a == 0 || a > IOB_ADDR_MAX) return 3;
+    if (port == NODE_PORT_USB && node_master_in_control(n, now)) return 4;  /* as register 38 over USB */
     if (n->hw->addr_store(n->hw->ctx, (uint8_t)a) != NODE_HW_OK) return 4;
     n->nv_fault = false;
     *addr = (uint8_t)a;
@@ -491,12 +466,10 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
     if (len >= 6u) { a = get16(rx + 2); c = get16(rx + 4); }
     uint16_t out = 0;
     /* FW-61, FW-62: the whole-block writes with their own rules */
-    if (fc == 16 && len >= 9u && ((a == IOB_R_CFG_UNLOCK && c == 7u) || (a == IOB_R_CFG_ADDR && c == 4u) ||
-                                  (a == IOB_R_SERIAL && c == IOB_SERIAL_REGS))) {
+    if (fc == 16 && len >= 9u && ((a == IOB_R_ADDR_SET && c == 3u) || (a == IOB_R_SERIAL && c == IOB_SERIAL_REGS))) {
         uint8_t e, new_addr = 0;
         if (rx[6] != 2u * c || len != 9u + 2u * c) e = 3;
-        else if (a == IOB_R_CFG_UNLOCK) e = cfg_unlock(n, now, rx + 7);
-        else if (a == IOB_R_CFG_ADDR) e = cfg_commit(n, now, rx + 7, &new_addr);
+        else if (a == IOB_R_ADDR_SET) e = addr_set(n, port, now, rx + 7, &new_addr);
         else e = serial_write(n, port, rx + 7);
         if (e) out = exception(tx, addr, fc, e);
         else { memcpy(tx, rx, 6); out = finish(tx, 6); }
