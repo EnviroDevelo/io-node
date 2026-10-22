@@ -1,0 +1,46 @@
+# Host build and tests for the CEMS I/O board node firmware.
+# The platform repository is expected next to this one (CEMS Supervisor\Firmware\cems-platform);
+# override with  make PLAT=/path/to/cems-platform.
+#
+#   make test         node core tests + byte-for-byte comparison with the platform's simulated node
+#   make master-test  the platform's whole host test suite, with every simulated I/O board
+#                     replaced by this node firmware (tests/platform/iob_node_real.c)
+#   make target       compile-check the STM32G0B1 build with arm-none-eabi-gcc (port/stm32g0/check.mk)
+PLAT   ?= ../cems-platform
+CC     ?= gcc
+CFLAGS ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Werror \
+          -fsanitize=address,undefined -fno-omit-frame-pointer
+INC     = -Inode -Idrivers -Itests -I$(PLAT)/platform/include -I$(PLAT)/platform/bsp
+BUILD   = build
+
+NODE_SRC = node/node.c $(PLAT)/platform/core/mb_rtu.c
+TEST_SRC = tests/test_main.c tests/test_node.c tests/test_diff.c tests/sim_hw.c $(PLAT)/platform/bsp/iob_node_sim.c
+DRV_TEST = $(wildcard tests/test_drv_*.c)
+DRV_SRC  = $(wildcard drivers/*.c)
+HDRS     = $(wildcard node/*.h drivers/*.h tests/*.h) $(PLAT)/platform/include/iobus.h $(PLAT)/platform/include/mb_rtu.h
+
+.PHONY: test master-test target clean
+test: $(BUILD)/node_tests
+	./$(BUILD)/node_tests
+
+$(BUILD)/node_tests: $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) $(DRV_TEST) $(HDRS)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -DPLAT_HOST $(INC) $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) $(DRV_TEST) -o $@ -lm
+
+# ---- the platform's tests with the real node in place of iob_node_sim.c ----
+# The platform's own Makefile builds its test binary, with its source list (CORE) read back from
+# it and only iob_node_sim.c swapped out, into this repository's build directory.
+PLAT_CORE := $(shell $(MAKE) -s --no-print-directory -C $(PLAT) -f Makefile -f $(CURDIR)/tools/printvar.mk print-CORE 2>/dev/null)
+REAL_NODE  = $(CURDIR)/tests/platform/iob_node_real.c $(CURDIR)/node/node.c $(CURDIR)/tests/sim_hw.c
+master-test: $(REAL_NODE) $(HDRS)
+	@test -n "$(PLAT_CORE)" || { echo "cannot read CORE from $(PLAT)/Makefile"; exit 1; }
+	$(MAKE) -C $(PLAT) BUILD=$(CURDIR)/$(BUILD)/plat \
+	    CORE="$(filter-out platform/bsp/iob_node_sim.c,$(PLAT_CORE)) $(REAL_NODE)" \
+	    CFLAGS="$(CFLAGS) -I$(CURDIR)/node -I$(CURDIR)/tests" $(CURDIR)/$(BUILD)/plat/tests
+	cd $(PLAT) && $(CURDIR)/$(BUILD)/plat/tests
+
+target:
+	$(MAKE) -f port/stm32g0/check.mk PLAT=$(PLAT)
+
+clean:
+	rm -rf $(BUILD)

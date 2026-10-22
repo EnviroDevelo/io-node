@@ -1,0 +1,69 @@
+/* sim_hw.c - see sim_hw.h */
+#include "sim_hw.h"
+#include <string.h>
+
+static int a_config(void *ctx, uint8_t ol)
+{
+    sim_hw_t *s = ctx;
+    s->a_configs++;
+    if (s->a_dead) return NODE_HW_NO_ANSWER;
+    if (s->a_readback_bad) return NODE_HW_READBACK;
+    s->a_ol_cfg = ol;
+    return NODE_HW_OK;
+}
+static int a_write(void *ctx, uint8_t o)
+{
+    sim_hw_t *s = ctx;
+    s->a_writes++;
+    if (s->a_dead) return NODE_HW_NO_ANSWER;
+    s->a_out = o;
+    return NODE_HW_OK;
+}
+static int a_diag(void *ctx, node_a_diag_t *d)
+{
+    sim_hw_t *s = ctx;
+    s->a_diags++;
+    if (s->a_dead) return NODE_HW_NO_ANSWER;
+    if (s->a_fail_reads > 0) { s->a_fail_reads--; return NODE_HW_NO_ANSWER; }
+    d->open = s->a_open_raw;
+    d->overload = s->a_overload;
+    d->overtemp = s->a_overtemp;
+    d->supply_ok = s->field_a;
+    d->chip_fault = s->a_internal_fault;
+    return NODE_HW_OK;
+}
+static int in_config(void *ctx, uint8_t f, uint8_t wb)
+{
+    sim_hw_t *s = ctx;
+    s->in_configs++;
+    if (s->in_dead) return NODE_HW_NO_ANSWER;
+    s->in_filter_cfg = f;
+    s->in_wb_cfg = wb;
+    return NODE_HW_OK;
+}
+static int in_read(void *ctx, node_in_t *d)
+{
+    sim_hw_t *s = ctx;
+    s->in_reads++;
+    if (s->in_dead) return NODE_HW_NO_ANSWER;
+    if (s->in_fail_reads > 0) { s->in_fail_reads--; return NODE_HW_NO_ANSWER; }
+    d->states = s->field_a ? s->inputs : 0;
+    d->wirebreak = s->wirebreak_raw;
+    d->supply_ok = s->field_a;
+    d->chip_fault = s->in_internal_fault;
+    return NODE_HW_OK;
+}
+static void b_write(void *ctx, uint8_t o) { sim_hw_t *s = ctx; s->b_writes++; s->b_out = o; }
+static bool b_fault_pin(void *ctx) { return ((sim_hw_t *)ctx)->b_fault_pin; }
+static bool b_wdg_tripped(void *ctx) { return ((sim_hw_t *)ctx)->b_wdg_tripped; }
+static void b_wdg_service(void *ctx) { ((sim_hw_t *)ctx)->b_services++; }
+static bool b_supply_ok(void *ctx) { return ((sim_hw_t *)ctx)->field_b; }
+static void relays(void *ctx, uint8_t r) { ((sim_hw_t *)ctx)->relays = r; }
+
+void sim_hw_init(sim_hw_t *s)
+{
+    memset(s, 0, sizeof *s);
+    s->field_a = s->field_b = true;
+    s->hw = (node_hw_t){ s, a_config, a_write, a_diag, in_config, in_read,
+                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays };
+}
