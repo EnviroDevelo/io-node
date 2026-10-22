@@ -5,7 +5,7 @@ int t_checks, t_fails;
 
 int main(void)
 {
-    struct { const char *name; void (*fn)(void); } t[] = { { "node", test_node }, { "diff", test_diff } };
+    struct { const char *name; void (*fn)(void); } t[] = { { "node", test_node }, { "diff", test_diff }, { "drv", test_drv } };
     for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
         int c0 = t_checks, f0 = t_fails;
         t[i].fn();
