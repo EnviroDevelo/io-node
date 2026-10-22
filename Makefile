@@ -18,7 +18,7 @@ TEST_SRC = tests/test_main.c tests/test_node.c tests/test_diff.c tests/test_drv.
 DRV_SRC  = $(wildcard drivers/*.c)
 HDRS     = $(wildcard node/*.h drivers/*.h tests/*.h port/stm32g0/node_port.h) $(PLAT)/platform/include/iobus.h $(PLAT)/platform/include/mb_rtu.h
 
-.PHONY: test master-test target clean
+.PHONY: test master-test target vnode clean
 test: $(BUILD)/node_tests
 	./$(BUILD)/node_tests
 
@@ -40,6 +40,12 @@ master-test:
 	    CORE="$(filter-out platform/bsp/iob_node_sim.c,$(PLAT_CORE)) $(REAL_NODE)" \
 	    CFLAGS="$(CFLAGS) -I$(SELF)/node -I$(SELF)/tests" $(SELF)/$(BUILD)/plat/tests
 	cd $(PLAT) && $(SELF)/$(BUILD)/plat/tests
+
+# ---- a virtual node on a pseudo-terminal, for trying tools/at02.py without a board (Linux/macOS) ----
+vnode: $(BUILD)/vnode
+$(BUILD)/vnode: tests/vnode.c $(NODE_SRC) tests/sim_hw.c $(HDRS)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -DPLAT_HOST $(INC) tests/vnode.c $(NODE_SRC) tests/sim_hw.c -o $@
 
 target:
 	$(MAKE) -f port/stm32g0/check.mk PLAT=$(PLAT)

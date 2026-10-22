@@ -19,6 +19,7 @@ reference this firmware is compared against byte for byte.
 | `node/node_hw.h` | What the core needs from the board: the three chips, bank B's status pins and the relays. |
 | `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
 | `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, DIP switch, straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
+| `tools/at02.py` | AT-02 conformance test for a real board, from a PC (below). |
 | `tests/` | Host tests (below). `tests/platform/iob_node_real.c` puts this firmware in place of the platform's simulated node. |
 
 ## Building and testing
@@ -27,6 +28,7 @@ reference this firmware is compared against byte for byte.
 make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, the chip drivers against frame-level chip models
 make master-test   # the platform's whole host suite with every simulated I/O board replaced by this firmware
 make target        # arm-none-eabi-gcc: compile and link for the STM32G0B1 against ST's HAL headers
+make vnode         # a virtual board on a pseudo-terminal, for trying tools/at02.py (Linux/macOS)
 ```
 
 `make target` needs `..\ext` with the xPack arm-none-eabi-gcc 13.3.1 and ST's
@@ -114,8 +116,36 @@ How the chips' diagnostics become the node's registers:
 | FW-56 | USB at the DIP address or 247; exception 04 while the master is in control | `t_usb` |
 | FW-57 | register 37 over USB; outputs off 100 ms, then a reset into the bootloader | `t_usb`, `t_rules` |
 
-AT-02 (register rules from a PC) is what `t_rules` and the comparison do in software; the rest of
-the acceptance tests need the board.
+AT-02 (register rules from a PC) is what `t_rules` and the comparison do in software, and
+`tools/at02.py` does on the board; the rest of the acceptance tests need the board.
+
+## AT-02 on a board: tools/at02.py
+
+A USB-RS485 adapter on the board's bus terminals, **main board disconnected**, then:
+
+```
+pip install pyserial
+python tools\at02.py COM5 --address 3      # RS-485; the DIP switch setting
+python tools\at02.py COM7 --usb            # the board's USB-C port (address 247)
+```
+
+71 checks over RS-485 (69 over USB): identification; every reserved register reads 0; FC03 and
+FC04 agree; reads past register 79 or with a bad count; writes to every kind of read-only
+register (02); every setting just out of range (03) and nothing changed, also when one bad value
+sits in a multi-register write; nine unknown functions (01); malformed requests (03); another
+address, a broadcast and two bad-CRC frames get no reply and RX_ERRORS goes up by exactly 2; the
+accepted writes echo correctly and function 23 writes before it reads. It prints PASS / FAIL per
+check, writes the same report to `at02-<time>.txt`, and exits 0 only when everything passed.
+`-v` shows every frame.
+
+It never switches anything on: its only output write is all-off, it puts settings 32-35 back at
+the end, and it never sends the bootloader key or FAULT_CLEAR = 1.
+
+Tried here against the firmware itself on a pseudo-terminal (`make vnode`, then
+`python3 tools/at02.py <the pty it prints> -a 1`): all 71 pass over RS-485 and all 69 over USB;
+with `build/vnode -m 1..4` the node deliberately breaks one rule each (answers another address,
+does not count bad CRCs, answers unknown functions with 02, half-applies a refused write) and the
+script fails exactly those checks.
 
 ## Differences from the simulated node (to raise, per the requirements' rule)
 
