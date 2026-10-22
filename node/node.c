@@ -39,16 +39,35 @@ bool node_fault_led(const node_t *n)
     return n->chip_a.fault || n->chip_in.fault || !field_a_ok(n) || n->timeout_latched || n->b_fault;
 }
 
-bool node_addr_led_blink(const node_t *n, uint32_t now) { return n->address == 0 && (now / 250u) % 2u == 0; }
-
 bool node_comms_ok(const node_t *n, uint32_t now)
 {
     return n->comms_seen && (uint32_t)(now - n->last_comms_ms) < NODE_COMMS_TIMEOUT_MS;
 }
 
-bool node_heartbeat_led(const node_t *n, uint32_t now)
+bool node_comms_led(const node_t *n, uint32_t now)
 {
-    return node_comms_ok(n, now) ? (now / 500u) % 2u == 0 : (now / 125u) % 2u == 0;
+    if (n->address == 0) return true;                       /* FW-02: no address, steady on */
+    if (!n->comms_seen) return false;                       /* waiting for the master */
+    if (!node_comms_ok(n, now)) return (now / 125u) % 2u == 0;            /* lost now: 4 Hz */
+    if (n->comms_lost) { uint32_t t = now % 1000u; return t < 100u || (t >= 250u && t < 350u); } /* double */
+    return now % 500u < 100u;                               /* healthy: a short flash twice a second */
+}
+
+bool node_heartbeat_led(uint32_t now) { return (now / 500u) % 2u == 0; }
+
+/* FW-58: losing the link latches COMMS_LOST */
+static void comms_check(node_t *n, uint32_t now)
+{
+    if (n->comms_seen && !node_comms_ok(n, now)) n->comms_lost = true;
+}
+
+/* FW-33: every change since the last RS-485 read noted. Without field supply A or a healthy
+ * input chip the inputs read 0 at once (FW-32), pending changes or not: a stale "closed" must
+ * never be shown while the input cannot be read. */
+static void in_track(node_t *n)
+{
+    if (field_a_ok(n) && in_ok(n)) n->in_pend |= (uint8_t)(n->in.states ^ n->in_rep);
+    else n->in_pend = n->in_rep;                              /* shows 0 */
 }
 
 /* ---------------- outputs ---------------- */
@@ -189,7 +208,9 @@ static void hold_check(node_t *n, uint32_t now)
 void node_poll(node_t *n, uint32_t now)
 {
     hold_check(n, now);
+    comms_check(n, now);
     service_chips(n, now);
+    in_track(n);
     apply_outputs(n);                       /* every pass: also rewrites bank A after any glitch */
     if (n->gate && !n->boot_pending) n->hw->b_wdg_service(n->hw->ctx);    /* FW-24 */
 }
@@ -207,13 +228,14 @@ uint16_t node_reg(const node_t *n, uint16_t r)
         if (node_healthy(n)) st |= IOB_ST_OUT_ENABLED;
         if (n->timeout_latched) st |= IOB_ST_TIMEOUT;
         if (field_a_ok(n)) st |= IOB_ST_FIELD_A_OK;
+        if (n->comms_lost) st |= IOB_ST_COMMS_LOST;
         if (n->field_b) st |= IOB_ST_FIELD_B_OK;
         if (n->wdg_latched) st |= IOB_ST_WDG_RESET;
         if (n->config_needed) st |= IOB_ST_CONFIG_NEEDED;
         if (n->chip_in.fault) st |= IOB_ST_IN_CHIP;
         if (n->chip_a.fault) st |= IOB_ST_OUT_A_CHIP;
         return st;
-    case IOB_R_INPUTS: return (field_a_ok(n) && in_ok(n)) ? n->in.states : 0u;          /* FW-32 */
+    case IOB_R_INPUTS: return (uint8_t)(n->in_rep ^ n->in_pend);                      /* FW-32, FW-33 */
     case IOB_R_OUT_APPLIED: return n->out_applied;
     case IOB_R_RELAY_APPLIED: return n->relay_applied;
     case IOB_R_A_OPEN: return a_ok(n) ? (uint16_t)(n->a.open & n->ol_en) : 0u;
@@ -252,7 +274,7 @@ static bool value_ok(uint16_t r, uint16_t v)
     case IOB_R_HOLD_DS: return v >= 1u && v <= 6000u;
     case IOB_R_FILTER_MS: return v <= 100u;
     case IOB_R_WB_ENABLE: case IOB_R_OL_ENABLE: return v <= 255u;
-    case IOB_R_FAULT_CLEAR: return v <= 1u;
+    case IOB_R_FAULT_CLEAR: return v <= 3u;
     default: return true;
     }
 }
@@ -298,7 +320,8 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
             if (v != n->ol_en) n->cfg_a_dirty = true;
             n->ol_en = v; n->config_needed = false; break;
         case IOB_R_FAULT_CLEAR:                                               /* FW-44 */
-            if (v) { n->timeout_latched = false; n->wdg_latched = false; }
+            if (v & 1u) { n->timeout_latched = false; n->wdg_latched = false; }
+            if (v & 2u) n->comms_lost = false;                                /* FW-58 */
             break;
         case IOB_R_BOOTLOADER:
             n->boot_pending = true;
@@ -335,7 +358,15 @@ static uint16_t exception(uint8_t *tx, uint8_t addr, uint8_t fc, uint8_t code)
     return finish(tx, 3);
 }
 
-static uint16_t read_regs(const node_t *n, uint8_t *tx, uint8_t addr, uint8_t fc, uint16_t start, uint16_t cnt)
+/* FW-33: over USB, INPUTS is the inputs as they are now; over RS-485 the held changes */
+static uint16_t reg_on(const node_t *n, node_port_t port, uint16_t r)
+{
+    if (r == IOB_R_INPUTS && port == NODE_PORT_USB) return (field_a_ok(n) && in_ok(n)) ? n->in.states : 0u;
+    return node_reg(n, r);
+}
+
+static uint16_t read_regs(const node_t *n, node_port_t port, uint8_t *tx, uint8_t addr, uint8_t fc, uint16_t start,
+                          uint16_t cnt)
 {
     if (cnt == 0 || cnt > 125u) return exception(tx, addr, fc, 3);
     if ((uint32_t)start + cnt > NODE_REG_SPACE) return exception(tx, addr, fc, 2);
@@ -343,7 +374,7 @@ static uint16_t read_regs(const node_t *n, uint8_t *tx, uint8_t addr, uint8_t fc
     tx[1] = fc;
     tx[2] = (uint8_t)(2u * cnt);
     for (uint16_t i = 0; i < cnt; ++i) {
-        uint16_t v = node_reg(n, (uint16_t)(start + i));
+        uint16_t v = reg_on(n, port, (uint16_t)(start + i));
         tx[3u + 2u * i] = (uint8_t)(v >> 8);
         tx[4u + 2u * i] = (uint8_t)v;
     }
@@ -355,6 +386,8 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
 {
     n->frames++;
     hold_check(n, now);
+    comms_check(n, now);
+    in_track(n);
     /* FW-12: damaged frames are dropped and counted (RS-485 only: RX_ERRORS is about the bus) */
     if (rx_error || len < 4u || len > NODE_FRAME_MAX ||
         mbr_crc16(rx, len - 2u) != (uint16_t)(rx[len - 2u] | rx[len - 1u] << 8)) {
@@ -373,7 +406,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
     uint16_t out = 0;
     switch (fc) {
     case 3: case 4:
-        out = len == 8u ? read_regs(n, tx, addr, fc, a, c) : exception(tx, addr, fc, 3);
+        out = len == 8u ? read_regs(n, port, tx, addr, fc, a, c) : exception(tx, addr, fc, 3);
         break;
     case 6: {
         if (len != 8u) { out = exception(tx, addr, fc, 3); break; }
@@ -404,11 +437,17 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
                     : write_check(n, port, now, wa, wc, rx + 11);
         if (e) { out = exception(tx, addr, fc, e); break; }
         write_apply(n, port, now, wa, wc, rx + 11);            /* FW: write before read */
-        out = read_regs(n, tx, addr, fc, a, c);
+        out = read_regs(n, port, tx, addr, fc, a, c);
         break;
     }
     default:
         out = exception(tx, addr, fc, 1);
+    }
+    /* FW-33: a read of INPUTS by the RS-485 master consumes the changes it was shown */
+    if (port == NODE_PORT_RS485 && out > 5u && (fc == 3 || fc == 4 || fc == 23) && !(tx[1] & 0x80u) &&
+        a <= IOB_R_INPUTS && (uint32_t)a + c > IOB_R_INPUTS) {
+        n->in_rep = (uint8_t)(n->in_rep ^ n->in_pend);
+        n->in_pend = 0;
     }
     if (out) n->replies++;
     return out;

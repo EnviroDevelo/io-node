@@ -5,7 +5,7 @@
  *     USER CODE BEGIN 2:   node_main();                  (after the MX_..._Init calls; never returns)
  *
  * One pass per millisecond (HAL tick): node_poll (hold time, chips), HEALTHY, watchdog, LEDs
- * (the heartbeat LED is set here only, so a stuck loop freezes it: FW-59).
+ * (set here only, so a stuck loop freezes them: FW-55, FW-59).
  * Frames are handled as soon as they are complete, between passes, so a reply starts within
  * about 0.2 ms of the 1.75 ms end-of-frame silence (FW-11). HEALTHY and the watchdog are only
  * ever touched here (FW-22, FW-23): a stuck loop stops both. */
@@ -15,8 +15,6 @@
 #include "node.h"
 #include "rs485_g0.h"
 #include "usb_g0.h"
-
-#define ACT_PULSE_MS 20u
 
 static node_t node;
 static uint8_t tx[NODE_FRAME_MAX];                   /* FW-50 */
@@ -30,7 +28,7 @@ void node_main(void)
     uint32_t now = HAL_GetTick();
     node_init(&node, drivers_hw(), &b, now);         /* everything off, chips configured (FW-01, FW-04) */
     rs485_init();
-    uint32_t last_pass = now, act_until = 0, act_seen = node.act_pulses;
+    uint32_t last_pass = now;
 
     for (;;) {
         now = HAL_GetTick();
@@ -51,9 +49,7 @@ void node_main(void)
         node_poll(&node, now);
         if (node_healthy(&node)) board_healthy_toggle();          /* FW-22 */
         board_iwdg_refresh();                                     /* FW-23 */
-        if (node.act_pulses != act_seen) { act_seen = node.act_pulses; act_until = now + ACT_PULSE_MS; }
-        bool act = node.address == 0 ? node_addr_led_blink(&node, now) : (int32_t)(act_until - now) > 0;
-        board_leds(act, node_fault_led(&node), node_heartbeat_led(&node, now));   /* FW-55, FW-02, FW-59 */
+        board_leds(node_comms_led(&node, now), node_fault_led(&node), node_heartbeat_led(now));   /* FW-55, FW-02, FW-59 */
         if (node_boot_due(&node, now)) board_enter_bootloader();  /* FW-57: outputs off for 100 ms first */
     }
 }

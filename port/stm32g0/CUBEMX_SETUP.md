@@ -25,7 +25,7 @@ outputs off before this code runs, HW-05). Inputs as listed.
 | Label | Mode | Notes |
 |---|---|---|
 | `HEALTHY` | GPIO output | feeds the monostable (HW-04); toggled every loop pass |
-| `LED_ACT`, `LED_FAULT`, `LED_HB` | GPIO output | activity, fault, heartbeat (green: 1 Hz link up, 4 Hz link down) |
+| `LED_COMMS`, `LED_FAULT`, `LED_HB` | GPIO output | comms (patterns in node.h), fault, heartbeat (1 Hz while the firmware runs). The green power LED is on the 3.3 V rail, no pin |
 | `CS_A`, `CS_IN`, `CS_B` | GPIO output, **initial level high** | chip selects: bank A (ISO2H823V2.5), inputs (ISO1I813T), bank B (ISO808A-1) |
 | `DIP1`..`DIP4` | GPIO input, pull-up | switch ON connects to 0 V; DIP1 = address bit 0 |
 | `HWREV0`, `HWREV1` | GPIO input, pull-up | straps to 0 V; HW_REV = 1 + value |

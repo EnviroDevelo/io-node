@@ -91,6 +91,7 @@ void test_diff(void)
 
     uint8_t f[300], t1[300], t2[NODE_FRAME_MAX];
     long frames = 0, replies = 0, mism_reply = 0, mism_reg = 0, exceptions = 0, timeouts = 0, gate_opened = 0;
+    long comms_lost = 0, comms_cleared = 0, held = 0;
     for (long step = 0; step < 200000; step++) {
         /* the outside world changes now and then, identically for both */
         if (rnd(200) == 0) {
@@ -130,6 +131,11 @@ void test_diff(void)
         }
         if (ref.timeout_latched && !(node_reg(&me, IOB_R_STATUS) & IOB_ST_TIMEOUT)) mism_reg++;
         if (ref.timeout_latched) timeouts++;
+        static bool was_lost;
+        if (ref.comms_lost) comms_lost++;
+        if (was_lost && !ref.comms_lost) comms_cleared++;
+        was_lost = ref.comms_lost;
+        if (ref.field_a && node_reg(&me, IOB_R_INPUTS) != ref.inputs) held++;   /* a change still to be shown */
     }
     CHECK_EQ(mism_reply, 0);
     CHECK_EQ(mism_reg, 0);
@@ -143,6 +149,10 @@ void test_diff(void)
     CHECK(gate_opened > 100);
     CHECK(timeouts > 1000);
     CHECK(me.rx_errors > 1000);
-    printf("  diff: %ld frames, %ld replies, %ld exceptions, %u writes of register 0, %u CRC/runt errors, gate opened %ld times\n",
-           frames, replies, exceptions, (unsigned)me.writes0, (unsigned)me.rx_errors, gate_opened);
+    CHECK(comms_lost > 1000);
+    CHECK(comms_cleared > 100);
+    CHECK(held > 100);
+    printf("  diff: %ld frames, %ld replies, %ld exceptions, %u writes of register 0, %u CRC/runt errors, gate opened %ld times,\n"
+           "        comms lost latched in %ld steps and cleared %ld times, an input change waiting to be shown in %ld steps\n",
+           frames, replies, exceptions, (unsigned)me.writes0, (unsigned)me.rx_errors, gate_opened, comms_lost, comms_cleared, held);
 }

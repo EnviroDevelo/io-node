@@ -56,6 +56,8 @@ static void pull(iob_node_t *n, const shadow_t *s)
     n->config_needed = m->config_needed; n->timeout_latched = m->timeout_latched; n->wdg_latched = m->wdg_latched;
     n->gate = node_healthy(m);
     n->last_write_ms = m->last_write_ms;
+    n->comms_seen = m->comms_seen; n->comms_lost = m->comms_lost; n->last_comms_ms = m->last_comms_ms;
+    n->in_rep = m->in_rep; n->in_pend = m->in_pend;
     n->rx_errors = m->rx_errors; n->resets = m->resets;
     n->frames = m->frames; n->replies = m->replies; n->writes0 = m->writes0;
 }

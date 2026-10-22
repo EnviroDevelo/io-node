@@ -20,7 +20,7 @@ POSIX serial (Linux / macOS only).
 Safety: the script never switches anything on. The only output write it makes is all-off
 (OUT_CMD = 0, RELAY_CMD = 0), which turns off anything that was on. Settings it changes
 (HOLD_DS, FILTER_MS, WB_ENABLE, OL_ENABLE) are put back at the end. It never writes the bootloader
-key or FAULT_CLEAR = 1.
+key or anything to FAULT_CLEAR (it would clear latched faults).
 
 Exit code 0 when every check passes, 1 when any fails, 2 when the board cannot be reached.
 """
@@ -337,7 +337,7 @@ def checks(run, node, usb, ident, saved):
     before = node.regs(R_HOLD_DS, 4)
     cases = [(R_HOLD_DS, 0, "HOLD_DS 0"), (R_HOLD_DS, 6001, "HOLD_DS 6001"), (R_HOLD_DS, 0xFFFF, "HOLD_DS 65535"),
              (R_FILTER_MS, 101, "FILTER_MS 101"), (R_WB_ENABLE, 256, "WB_ENABLE 256"),
-             (R_OL_ENABLE, 256, "OL_ENABLE 256"), (R_FAULT_CLEAR, 2, "FAULT_CLEAR 2"),
+             (R_OL_ENABLE, 256, "OL_ENABLE 256"), (R_FAULT_CLEAR, 4, "FAULT_CLEAR 4"),
              (R_RELAY_CMD, 4, "RELAY_CMD 4")]
     for reg, val, name in cases:
         expect_exc(run, node.write1(reg, val), 3, "FC06 %s" % name)

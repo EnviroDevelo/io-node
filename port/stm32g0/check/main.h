@@ -9,8 +9,8 @@
 
 #define HEALTHY_GPIO_Port   GPIOA
 #define HEALTHY_Pin         GPIO_PIN_0
-#define LED_ACT_GPIO_Port   GPIOA
-#define LED_ACT_Pin         GPIO_PIN_1
+#define LED_COMMS_GPIO_Port GPIOA
+#define LED_COMMS_Pin       GPIO_PIN_1
 #define LED_FAULT_GPIO_Port GPIOA
 #define LED_FAULT_Pin       GPIO_PIN_4
 #define LED_HB_GPIO_Port    GPIOB

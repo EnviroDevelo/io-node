@@ -39,10 +39,10 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 474 checks, 0 failed (node 314, comparison 11, drivers and the whole board on them 149) |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 601 checks, 0 failed (node 438, comparison 14, drivers and the whole board on them 149) |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
-| `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
-| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.1 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
+| `make master-test` | 13,971 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, latched comms fault, short input openings, node restart, hold time) |
+| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.4 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
 
 ## AT-13 on a board: tools/at13.py
@@ -115,7 +115,7 @@ How the chips' diagnostics become the node's registers:
 | Req | Where | Tested |
 |---|---|---|
 | FW-01 | `node_init` (all off, gate closed); HEALTHY only from `node_healthy` | `t_startup`, `t_board` |
-| FW-02 | `board_boot_info` (DIP once); `node_frame` (DIP 0 never answers); `node_addr_led_blink` | `t_rules` |
+| FW-02 | `board_boot_info` (DIP once); `node_frame` (DIP 0 never answers); `node_comms_led` steady on | `t_rules` |
 | FW-03 | `node_init` defaults, WDG_RESET from the reset cause; `reset_cause` clears the flags | `t_startup` |
 | FW-04 | `config_a` / `config_in` before anything opens; retry every 1 s; drivers read every setting back | `t_chips`, `t_iso2h823`, `t_iso1i813t` |
 | FW-10, 11 | `rs485_g0.c` receiver timeout 202 bit times; reply from the main loop | target build; AT-03 on the bench |
@@ -130,17 +130,18 @@ How the chips' diagnostics become the node's registers:
 | FW-25 | `apply_outputs` (relays follow RELAY_CMD, off with the gate) | `t_outputs`, `t_hold` |
 | FW-26 | only a write of register 0 opens the gate | `t_hold` |
 | FW-30..32 | input read every 2 ms; filter mapping; masks; 0 without supply A | `t_chips`, `t_iso1i813t`, `t_board` |
+| FW-33 | `in_track` and the consume in `node_frame`: every input change shown once to the RS-485 master; field A or input chip fault reads 0 at once; USB reads the live inputs | `t_inputs_hold`, comparison; platform `t_input_pulse` |
 | FW-40..43 | diagnostics every 5 ms; present state; FAULT 1 ms debounce; two failures | `t_chips`, `t_iso2h823`, `t_board` |
 | FW-44 | FAULT_CLEAR clears TIMEOUT and WDG_RESET only | `t_hold` |
 | FW-50 | static 256-byte buffers, no heap | code |
 | FW-51 | `node_reg`, reserved read 0 | `t_startup`, comparison |
 | FW-52 | `node/node_version.h` | `t_startup` |
 | FW-53 | `make target` -Werror; iobus.h and mb_rtu.c used in place | target build |
-| FW-55 | activity pulse per valid frame; fault LED | `node_main` |
+| FW-55 | `node_comms_led` (flash twice a second / double flash while a loss is latched / 4 Hz lost / off / DIP 0 steady), fault LED; power LED is hardware | `t_comms`; `node_main` |
 | FW-56 | USB at the DIP address or 247; exception 04 while the master is in control | `t_usb` |
 | FW-57 | register 37 over USB; outputs off 100 ms, then a reset into the bootloader | `t_usb`, `t_rules` |
-| FW-58 | `node_comms_ok`: link up while a valid RS-485 request to this node came within 1 s; LED only, outputs follow the hold time | `t_comms` |
-| FW-59 | heartbeat LED from the main loop: 1 Hz link up, 4 Hz link down | `t_comms`; target build |
+| FW-58 | `node_comms_ok`, `comms_check`: losing the link latches STATUS COMMS_LOST; only FAULT_CLEAR bit 1 or a restart clears it; outputs follow the hold time | `t_comms`, comparison; platform `t_comms_latch` |
+| FW-59 | `node_heartbeat_led`: 1 Hz from the main loop, nothing else | `t_comms`; target build |
 
 AT-02 (register rules from a PC) is what `t_rules` and the comparison do in software, and
 `tools/at02.py` does on the board; the rest of the acceptance tests need the board.

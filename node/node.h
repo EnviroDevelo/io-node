@@ -19,13 +19,28 @@
  *     time lets the hardware gate drop.
  *   - Reads, settings writes and fault clears never switch anything on.
  *
- * Communications watchdog and heartbeat LED (FW-58, FW-59):
+ * Communications watchdog (FW-58):
  *   - The link counts as up while a valid request addressed to this node has arrived on RS-485
  *     within NODE_COMMS_TIMEOUT_MS (any function, exceptions included; not USB, not broadcasts,
- *     not frames with a bad CRC). It only drives the heartbeat LED: the outputs are governed by
- *     the hold time, so a short break or a main-board restart does not drop the valves.
- *   - Heartbeat LED, from the main loop (a stuck loop freezes it on or off): 1 Hz while the link
- *     is up, 4 Hz while it is down or before the master's first request.
+ *     not frames with a bad CRC).
+ *   - Once the link has been up, losing it latches COMMS_LOST (STATUS bit 8). It is not cleared
+ *     by the link coming back: only a write of FAULT_CLEAR with bit 1 set (the main board sends
+ *     it when its IOB_LOST alarm is acknowledged) or a restart clears it.
+ *   - The outputs are governed by the hold time, not by the link, so a short break or a
+ *     main-board restart does not drop the valves.
+ *
+ * LEDs (FW-55, FW-59), all set from the main loop, so a stuck loop freezes them:
+ *   - heartbeat: 1 Hz, 50 %, whenever the firmware runs (nothing else);
+ *   - comms: one short flash every 0.5 s while the link is up; a double flash every second
+ *     while it is up but a loss is still latched; fast 4 Hz while it is down; off before the
+ *     master's first request; steady on with DIP address 0 (no address, never answers: FW-02).
+ *
+ * Inputs (FW-33): every change of an input is reported at least once to the RS-485 master, so
+ * an alarm contact that opens for less than the master's poll period is not missed. A read of
+ * INPUTS over RS-485 returns, for each input that changed since the previous such read, the
+ * other state from the one last reported; a change and its return count as one change shown.
+ * Reads over USB see the inputs as they are now (nothing held, nothing consumed), so a PC tool
+ * works the same with or without a master on the bus.
  *
  * Ports (FW-56, FW-57): requests arrive on the RS-485 bus or on the USB virtual COM port.
  *   - RS-485 answers at the DIP address only (1..15); DIP 0 means never answer.
@@ -99,6 +114,8 @@ typedef struct {
     uint32_t last_master_ms;        /* last valid RS-485 write of register 0 */
     bool     comms_seen;            /* a valid RS-485 request to this node since start (FW-58) */
     uint32_t last_comms_ms;         /* the last one */
+    bool     comms_lost;            /* latched: the link was lost (STATUS COMMS_LOST) */
+    uint8_t  in_rep, in_pend;       /* FW-33: inputs last reported to the RS-485 master, changes since */
     uint16_t rx_errors, resets;
     /* chips */
     node_chip_t chip_a, chip_in;
@@ -117,7 +134,7 @@ typedef struct {
     uint16_t n_out_a, n_out_b, n_relays, n_inputs;
     /* statistics */
     uint32_t frames, replies, writes0;
-    uint32_t act_pulses;            /* valid frames addressed to this node (activity LED, FW-55) */
+    uint32_t act_pulses;            /* valid frames addressed to this node */
 } node_t;
 
 void     node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t now_ms);
@@ -131,8 +148,8 @@ bool     node_healthy(const node_t *n);                /* toggle HEALTHY this pa
 bool     node_master_in_control(const node_t *n, uint32_t now_ms);
 bool     node_boot_due(const node_t *n, uint32_t now_ms);   /* time to jump to ST's bootloader */
 bool     node_fault_led(const node_t *n);
-bool     node_addr_led_blink(const node_t *n, uint32_t now_ms); /* DIP 0: activity LED at 2 Hz (FW-02) */
 bool     node_comms_ok(const node_t *n, uint32_t now_ms);       /* FW-58: the master is talking to this node */
-bool     node_heartbeat_led(const node_t *n, uint32_t now_ms);  /* FW-59: 1 Hz link up, 4 Hz link down */
+bool     node_comms_led(const node_t *n, uint32_t now_ms);      /* FW-55: the comms LED pattern */
+bool     node_heartbeat_led(uint32_t now_ms);                   /* FW-59: 1 Hz while the firmware runs */
 
 #endif
