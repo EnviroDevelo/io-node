@@ -305,16 +305,19 @@ static void t_usb(void)           /* FW-56, FW-57 */
 
 static void t_chips(void)         /* FW-04, FW-22, FW-30..32, FW-40..43 */
 {
-    /* bank A missing at start: OUT_A_CHIP, retried every second, outputs stay off */
+    /* bank A missing at start: OUT_A_CHIP, retried every second; bank B and the relays still run
+     * (a bank A fault is only reported, Gary 22 Oct); bank A is not reported as driven */
     sim_hw_init(&hw);
     hw.a_dead = true;
     boot(1, NODE_RST_POWER_ON, 0);
     CHECK(reg(IOB_R_STATUS) & IOB_ST_OUT_A_CHIP);
     CHECK_EQ(rw(RS, 1, 0xFFFF, 3, 1), MBR_OK);
-    CHECK(!(regs[0] & IOB_ST_OUT_ENABLED));
-    CHECK(!node_healthy(&n));
-    CHECK_EQ(regs[IOB_R_OUT_APPLIED - IOB_R_STATUS], 0);
-    CHECK_EQ(hw.b_out | hw.relays, 0);
+    CHECK(regs[0] & IOB_ST_OUT_ENABLED);
+    CHECK(regs[0] & IOB_ST_OUT_A_CHIP);
+    CHECK(node_healthy(&n));
+    CHECK_EQ(regs[IOB_R_OUT_APPLIED - IOB_R_STATUS], 0xFF00);
+    CHECK_EQ(regs[IOB_R_RELAY_APPLIED - IOB_R_STATUS], 3);
+    CHECK_EQ(hw.b_out, 0xFF); CHECK_EQ(hw.relays, 3);
     uint32_t c0 = hw.a_configs;
     run(999);  CHECK_EQ(hw.a_configs, c0);
     run(1);    CHECK_EQ(hw.a_configs, c0 + 1);
@@ -331,8 +334,10 @@ static void t_chips(void)         /* FW-04, FW-22, FW-30..32, FW-40..43 */
     hw.a_fail_reads = 2;
     run(20);
     CHECK(reg(IOB_R_STATUS) & IOB_ST_OUT_A_CHIP);
-    CHECK(!node_healthy(&n));
-    CHECK_EQ(hw.a_out | hw.b_out | hw.relays, 0);
+    CHECK(node_healthy(&n));
+    CHECK_EQ(hw.b_out, 0xFF); CHECK_EQ(hw.relays, 3);
+    CHECK_EQ(reg(IOB_R_OUT_APPLIED), 0xFF00);
+    CHECK(node_fault_led(&n));
     run(1000);
     CHECK(!(reg(IOB_R_STATUS) & IOB_ST_OUT_A_CHIP));
     CHECK(node_healthy(&n));

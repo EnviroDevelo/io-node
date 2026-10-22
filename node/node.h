@@ -14,8 +14,9 @@
  *   - Only a valid write that includes register 0 restarts the hold timer. When HOLD_DS x 0.1 s
  *     passes without one, every output and relay goes off, the gate closes and TIMEOUT latches;
  *     the next valid write of register 0 re-opens it.
- *   - HEALTHY toggles only while the gate is open and the bank A chip is healthy, so a stuck
- *     loop, a run-out hold time or a dead output chip all let the hardware gate drop.
+ *   - HEALTHY toggles only while the gate is open (a bank A chip fault is reported, OUT_A_CHIP, but
+ *     does not stop it: bank B and the relays keep running), so a stuck loop or a run-out hold
+ *     time lets the hardware gate drop.
  *   - Reads, settings writes and fault clears never switch anything on.
  *
  * Ports (FW-56, FW-57): requests arrive on the RS-485 bus or on the USB virtual COM port.

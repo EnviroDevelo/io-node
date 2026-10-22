@@ -22,8 +22,10 @@ static bool field_a_ok(const node_t *n)
     return any && ok;
 }
 
-/* the hardware gate is open, and so outputs may be on, only while HEALTHY toggles (FW-22) */
-bool node_healthy(const node_t *n) { return n->gate && a_ok(n) && !n->boot_pending; }
+/* the hardware gate is open, and so outputs may be on, only while HEALTHY toggles (FW-22).
+ * A bank A chip fault does not stop it (Gary, 22 Oct): OUT_A_CHIP is reported for the main
+ * board's alarm, and bank B and the relays keep running. */
+bool node_healthy(const node_t *n) { return n->gate && !n->boot_pending; }
 
 bool node_master_in_control(const node_t *n, uint32_t now)
 {
@@ -53,7 +55,8 @@ static void apply_outputs(node_t *n)
         n->chip_a.fails++;
     n->hw->b_write(n->hw->ctx, b);
     n->hw->relays(n->hw->ctx, r);
-    n->out_applied = (uint16_t)(a | (n->b_wdg ? 0u : (unsigned)b << 8));
+    /* bank A counts as driven only while its chip is answering and healthy */
+    n->out_applied = (uint16_t)((a_ok(n) ? a : 0u) | (n->b_wdg ? 0u : (unsigned)b << 8));
     n->relay_applied = r;
 }
 

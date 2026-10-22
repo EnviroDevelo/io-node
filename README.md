@@ -36,7 +36,7 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 305 checks, 0 failed |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 309 checks, 0 failed |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
 | `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
 | `make target` | Compiles and links with -Werror for Cortex-M0+: 6.8 KB flash, 3.5 KB RAM (of 256 KB and 144 KB), chip drivers in their fail-safe form |
@@ -45,7 +45,7 @@ Results on 22 Oct 2026:
 ## Main loop (port/stm32g0/node_main.c)
 
 One pass every millisecond: `node_poll` (hold time, chip reads, bank B pins), HEALTHY toggled if the
-gate is open and bank A is healthy, the watchdog refreshed, LEDs. Frames are handled the moment the
+gate is open, the watchdog refreshed, LEDs. Frames are handled the moment the
 USART's 1.75 ms receiver timeout ends them, so the reply starts about 1.8 ms after the request.
 HEALTHY and the watchdog are touched nowhere else, so a stuck loop drops the hardware gate within
 about 50 ms and resets the node within about 100 ms.
@@ -72,7 +72,7 @@ What is known so far is in each driver's header comment, with its source.
 | FW-14 | `rs485_irq` ignores bytes while a frame waits or a reply goes out | target build |
 | FW-20 | `write_apply` → `apply_outputs` before CMD_ECHO | `t_outputs` |
 | FW-21 | `hold_check` every 1 ms pass and before every frame | `t_hold` (incl. 10 min and the 2^32 ms wrap) |
-| FW-22 | `node_healthy`; `node_main` toggles once per pass | `t_chips`, `t_hold` |
+| FW-22 | `node_healthy` (gate open, not entering the bootloader; a bank A fault does not stop it); `node_main` toggles once per pass | `t_chips`, `t_hold` |
 | FW-23 | `board_iwdg_start` (100 ms), refreshed only in `node_main` | target build; AT-07 |
 | FW-24 | `node_poll`: `b_wdg_service` only while the gate is open | `t_outputs`, `t_hold` (servicing itself: datasheet) |
 | FW-25 | `apply_outputs` (relays follow RELAY_CMD, off with the gate) | `t_outputs`, `t_hold` |
@@ -95,10 +95,10 @@ the acceptance tests need the board.
 
 With healthy chips the two are byte-identical. They differ where the simulator has no model:
 
-1. **Bank A chip fault closes the gate.** FW-22 lets HEALTHY toggle only while the output chips are
-   healthy, so OUT_A_CHIP drops the hardware gate: OUT_ENABLED, OUT_APPLIED and RELAY_APPLIED read 0,
-   and **bank B and the relays go off too**. The simulator keeps the gate open. Please confirm that a
-   bank A fault should also stop bank B and the relays (it is what FW-22 with one gate, HW-04, means).
+1. **A bank A chip fault is reported, not acted on** (Gary, 22 Oct). OUT_A_CHIP is set, the master
+   raises its alarm ("outs 1-8 chip fault", outputs 1-8 marked faulty), and HEALTHY, bank B and the
+   relays keep running. OUT_APPLIED shows bank A as not driven while the fault lasts (bits 0-7 read
+   0); the simulator still shows them. Requirement FW-22 is updated to match.
 2. While IN_CHIP is set, INPUTS and WIREBREAK read 0 rather than the last values read; while
    OUT_A_CHIP is set, A_OPEN, A_OVERLOAD and A_OVERTEMP read 0.
 3. FIELD_A_OK comes from both chips' supply status; with neither chip answering it reads missing.

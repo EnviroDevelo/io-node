@@ -22,8 +22,8 @@ static void t_crc5(void)
     CHECK_EQ(iso2h823_crc5((const uint8_t *)"\0\0\0", 0), 0x1F);
 }
 
-/* With unconfirmed drivers the board must stay safe: chips "not answering", gate shut, bank B
- * inputs low, relays off, whatever the master writes. */
+/* With unconfirmed drivers the board must stay safe: chips "not answering" and reported, bank A
+ * not reported as driven, bank B inputs held low, whatever the master writes. */
 static void t_fail_safe(void)
 {
     if (ISO2H823_CONFIRMED && ISO1I813T_CONFIRMED && ISO808_CONFIRMED) return;
@@ -38,11 +38,10 @@ static void t_fail_safe(void)
     CHECK(node_frame(&n, NODE_PORT_RS485, 1, f, (uint16_t)len, false, tx) > 0);
     for (uint32_t t = 2; t < 3000; t++) node_poll(&n, t);
     uint16_t st = node_reg(&n, IOB_R_STATUS);
-    if (!ISO2H823_CONFIRMED) { CHECK(st & IOB_ST_OUT_A_CHIP); CHECK(!node_healthy(&n)); CHECK(!(st & IOB_ST_OUT_ENABLED)); }
+    if (!ISO2H823_CONFIRMED) { CHECK(st & IOB_ST_OUT_A_CHIP); CHECK_EQ(node_reg(&n, IOB_R_OUT_APPLIED) & 0xFF, 0); }
     if (!ISO1I813T_CONFIRMED) { CHECK(st & IOB_ST_IN_CHIP); CHECK_EQ(node_reg(&n, IOB_R_INPUTS), 0); }
     if (!ISO808_CONFIRMED) CHECK_EQ(hp.b_inputs, 0);
-    CHECK_EQ(hp.relays, 0);
-    CHECK_EQ(node_reg(&n, IOB_R_OUT_APPLIED), 0);
+    CHECK_EQ(hp.relays, 3);                      /* relays need no chip: they follow RELAY_CMD */
 }
 
 void test_drv(void)
