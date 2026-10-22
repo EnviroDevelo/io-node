@@ -19,6 +19,14 @@
  *     time lets the hardware gate drop.
  *   - Reads, settings writes and fault clears never switch anything on.
  *
+ * Communications watchdog and heartbeat LED (FW-58, FW-59):
+ *   - The link counts as up while a valid request addressed to this node has arrived on RS-485
+ *     within NODE_COMMS_TIMEOUT_MS (any function, exceptions included; not USB, not broadcasts,
+ *     not frames with a bad CRC). It only drives the heartbeat LED: the outputs are governed by
+ *     the hold time, so a short break or a main-board restart does not drop the valves.
+ *   - Heartbeat LED, from the main loop (a stuck loop freezes it on or off): 1 Hz while the link
+ *     is up, 4 Hz while it is down or before the master's first request.
+ *
  * Ports (FW-56, FW-57): requests arrive on the RS-485 bus or on the USB virtual COM port.
  *   - RS-485 answers at the DIP address only (1..15); DIP 0 means never answer.
  *   - USB answers at the DIP address or at 247 (NODE_USB_ADDRESS).
@@ -49,6 +57,7 @@
 #define NODE_RETRY_MS      1000u  /* a failed chip is configured again every second */
 #define NODE_BFAULT_MS        1u  /* bank B FAULT pin debounce */
 #define NODE_BOOT_DELAY_MS  100u  /* outputs off and HEALTHY stopped this long before the bootloader jump */
+#define NODE_COMMS_TIMEOUT_MS 1000u /* FW-58: link down after this long without a valid request (= the master's IOB_LOST) */
 
 typedef enum { NODE_PORT_RS485 = 0, NODE_PORT_USB = 1 } node_port_t;
 
@@ -88,6 +97,8 @@ typedef struct {
     bool     master_seen;           /* a valid RS-485 write of register 0 since start */
     uint32_t last_write_ms;         /* last valid write of register 0 (any port) */
     uint32_t last_master_ms;        /* last valid RS-485 write of register 0 */
+    bool     comms_seen;            /* a valid RS-485 request to this node since start (FW-58) */
+    uint32_t last_comms_ms;         /* the last one */
     uint16_t rx_errors, resets;
     /* chips */
     node_chip_t chip_a, chip_in;
@@ -121,5 +132,7 @@ bool     node_master_in_control(const node_t *n, uint32_t now_ms);
 bool     node_boot_due(const node_t *n, uint32_t now_ms);   /* time to jump to ST's bootloader */
 bool     node_fault_led(const node_t *n);
 bool     node_addr_led_blink(const node_t *n, uint32_t now_ms); /* DIP 0: activity LED at 2 Hz (FW-02) */
+bool     node_comms_ok(const node_t *n, uint32_t now_ms);       /* FW-58: the master is talking to this node */
+bool     node_heartbeat_led(const node_t *n, uint32_t now_ms);  /* FW-59: 1 Hz link up, 4 Hz link down */
 
 #endif

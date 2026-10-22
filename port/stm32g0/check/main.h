@@ -13,6 +13,8 @@
 #define LED_ACT_Pin         GPIO_PIN_1
 #define LED_FAULT_GPIO_Port GPIOA
 #define LED_FAULT_Pin       GPIO_PIN_4
+#define LED_HB_GPIO_Port    GPIOB
+#define LED_HB_Pin          GPIO_PIN_2
 #define CS_A_GPIO_Port      GPIOA
 #define CS_A_Pin            GPIO_PIN_8
 #define CS_IN_GPIO_Port     GPIOA

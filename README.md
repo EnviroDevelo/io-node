@@ -39,10 +39,10 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 449 checks, 0 failed (node 289, comparison 11, drivers and the whole board on them 149) |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 474 checks, 0 failed (node 314, comparison 11, drivers and the whole board on them 149) |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
 | `make master-test` | 13,928 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, node restart, hold time) |
-| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.0 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
+| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.1 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
 
 ## AT-13 on a board: tools/at13.py
@@ -139,6 +139,8 @@ How the chips' diagnostics become the node's registers:
 | FW-55 | activity pulse per valid frame; fault LED | `node_main` |
 | FW-56 | USB at the DIP address or 247; exception 04 while the master is in control | `t_usb` |
 | FW-57 | register 37 over USB; outputs off 100 ms, then a reset into the bootloader | `t_usb`, `t_rules` |
+| FW-58 | `node_comms_ok`: link up while a valid RS-485 request to this node came within 1 s; LED only, outputs follow the hold time | `t_comms` |
+| FW-59 | heartbeat LED from the main loop: 1 Hz link up, 4 Hz link down | `t_comms`; target build |
 
 AT-02 (register rules from a PC) is what `t_rules` and the comparison do in software, and
 `tools/at02.py` does on the board; the rest of the acceptance tests need the board.

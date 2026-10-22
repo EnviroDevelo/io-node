@@ -15,7 +15,7 @@ void board_boot_info(node_boot_t *b);       /* DIP, straps, UID, reset cause, re
 void board_iwdg_start(void);                /* about 100 ms (FW-23) */
 void board_iwdg_refresh(void);
 void board_healthy_toggle(void);            /* FW-22: main loop only */
-void board_leds(bool activity, bool fault);
+void board_leds(bool activity, bool fault, bool heartbeat);
 bool board_vbus(void);                      /* a PC is connected to the USB-C port */
 /* Outputs are already off and HEALTHY stopped (node_boot_due): note the request in .noinit and
  * reset; board_early_boot_check() then starts the bootloader from a clean reset. */

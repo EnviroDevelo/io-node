@@ -92,8 +92,9 @@ void board_iwdg_refresh(void) { IWDG->KR = 0xAAAAu; }
 
 void board_healthy_toggle(void) { HEALTHY_GPIO_Port->ODR ^= HEALTHY_Pin; }
 
-void board_leds(bool activity, bool fault)
+void board_leds(bool activity, bool fault, bool heartbeat)
 {
+    pin_set(LED_HB_GPIO_Port, LED_HB_Pin, heartbeat);
     pin_set(LED_ACT_GPIO_Port, LED_ACT_Pin, activity);
     pin_set(LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault);
 }

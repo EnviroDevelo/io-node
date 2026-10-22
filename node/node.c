@@ -41,6 +41,16 @@ bool node_fault_led(const node_t *n)
 
 bool node_addr_led_blink(const node_t *n, uint32_t now) { return n->address == 0 && (now / 250u) % 2u == 0; }
 
+bool node_comms_ok(const node_t *n, uint32_t now)
+{
+    return n->comms_seen && (uint32_t)(now - n->last_comms_ms) < NODE_COMMS_TIMEOUT_MS;
+}
+
+bool node_heartbeat_led(const node_t *n, uint32_t now)
+{
+    return node_comms_ok(n, now) ? (now / 500u) % 2u == 0 : (now / 125u) % 2u == 0;
+}
+
 /* ---------------- outputs ---------------- */
 
 /* Drive the chips from the commands, or everything off (FW-20, FW-21, FW-25, FW-26). */
@@ -356,6 +366,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
                                         : (addr == NODE_USB_ADDRESS || (n->address != 0 && addr == n->address));
     if (!mine) return 0;                     /* another node, or a broadcast: never answered */
     n->act_pulses++;
+    if (port == NODE_PORT_RS485) { n->comms_seen = true; n->last_comms_ms = now; }   /* FW-58 */
     uint8_t fc = rx[1];
     uint16_t a = 0, c = 0;
     if (len >= 6u) { a = get16(rx + 2); c = get16(rx + 4); }

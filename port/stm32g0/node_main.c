@@ -4,7 +4,8 @@
  *     USER CODE BEGIN 1:   board_early_boot_check();     (before HAL_Init)
  *     USER CODE BEGIN 2:   node_main();                  (after the MX_..._Init calls; never returns)
  *
- * One pass per millisecond (HAL tick): node_poll (hold time, chips), HEALTHY, watchdog, LEDs.
+ * One pass per millisecond (HAL tick): node_poll (hold time, chips), HEALTHY, watchdog, LEDs
+ * (the heartbeat LED is set here only, so a stuck loop freezes it: FW-59).
  * Frames are handled as soon as they are complete, between passes, so a reply starts within
  * about 0.2 ms of the 1.75 ms end-of-frame silence (FW-11). HEALTHY and the watchdog are only
  * ever touched here (FW-22, FW-23): a stuck loop stops both. */
@@ -52,7 +53,7 @@ void node_main(void)
         board_iwdg_refresh();                                     /* FW-23 */
         if (node.act_pulses != act_seen) { act_seen = node.act_pulses; act_until = now + ACT_PULSE_MS; }
         bool act = node.address == 0 ? node_addr_led_blink(&node, now) : (int32_t)(act_until - now) > 0;
-        board_leds(act, node_fault_led(&node));                   /* FW-55, FW-02 */
+        board_leds(act, node_fault_led(&node), node_heartbeat_led(&node, now));   /* FW-55, FW-02, FW-59 */
         if (node_boot_due(&node, now)) board_enter_bootloader();  /* FW-57: outputs off for 100 ms first */
     }
 }

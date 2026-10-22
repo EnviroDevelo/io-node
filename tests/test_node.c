@@ -419,6 +419,76 @@ static void t_chips(void)         /* FW-04, FW-22, FW-30..32, FW-40..43 */
     CHECK(!(reg(IOB_R_STATUS) & IOB_ST_FIELD_B_OK));
 }
 
+/* FW-58, FW-59: the communications watchdog and the heartbeat LED */
+static int hb_edges(uint32_t from, uint32_t ms)          /* LED changes over ms, the loop at 1 ms */
+{
+    int e = 0;
+    bool last = node_heartbeat_led(&n, from);
+    for (uint32_t t = from + 1; t <= from + ms; t++) {
+        bool v = node_heartbeat_led(&n, t);
+        e += v != last;
+        last = v;
+    }
+    return e;
+}
+
+static void t_comms(void)
+{
+    sim_hw_init(&hw);
+    boot(3, NODE_RST_POWER_ON, 0);
+    uint8_t f[MBR_FRAME_MAX];
+    size_t len;
+    /* before the master's first request: down, 4 Hz (8 changes a second) */
+    CHECK(!node_comms_ok(&n, now));
+    CHECK_EQ(hb_edges(now, 1000), 8);
+    /* USB, another address, a broadcast and a bad CRC do not count */
+    len = mbr_req_read(f, NODE_USB_ADDRESS, IOB_R_MAGIC, 1);
+    CHECK_EQ(xfer(NODE_PORT_USB, f, len, 1), MBR_OK);
+    len = mbr_req_read(f, 3, IOB_R_MAGIC, 1);
+    CHECK_EQ(xfer(NODE_PORT_USB, f, len, 1), MBR_OK);
+    len = mbr_req_read(f, 4, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
+    uint16_t w = 50;
+    len = mbr_req_write(f, 0, IOB_R_HOLD_DS, &w, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
+    len = mbr_req_read(f, 3, IOB_R_MAGIC, 1); f[len - 1] ^= 1u;
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
+    len = mbr_req_read(f, 3, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, true, tx), 0);   /* framing error */
+    CHECK(!node_comms_ok(&n, now));
+    /* a read on RS-485 brings the link up: 1 Hz (2 changes a second) */
+    CHECK_EQ(rd(RS, 3, IOB_R_MAGIC, 1), MBR_OK);
+    CHECK(node_comms_ok(&n, now));
+    bool slow = true;                                        /* 1 Hz: 500 ms on, 500 ms off */
+    for (uint32_t t = now; t < now + NODE_COMMS_TIMEOUT_MS; t++) slow &= node_heartbeat_led(&n, t) == ((t / 500u) % 2u == 0);
+    CHECK(slow);
+    run(NODE_COMMS_TIMEOUT_MS - 1u);
+    CHECK(node_comms_ok(&n, now));
+    run(1);
+    CHECK(!node_comms_ok(&n, now));                          /* 1 s without a request: down */
+    CHECK_EQ(hb_edges(now, 1000), 8);
+    /* an exception reply still means the master is there */
+    f[0] = 3; f[1] = 0x2B; f[2] = 0x0E; f[3] = 0x01; f[4] = 0;
+    uint16_t c = mbr_crc16(f, 5); f[5] = (uint8_t)c; f[6] = (uint8_t)(c >> 8);
+    CHECK(node_frame(&n, RS, now, f, 7, false, tx) == 5);
+    CHECK(node_comms_ok(&n, now));
+    /* the outputs do not follow the link: they hold until the hold time (FW-21) */
+    CHECK_EQ(rw(RS, 3, 0x0101, 0, 1), MBR_OK);
+    run(NODE_COMMS_TIMEOUT_MS + 10u);
+    CHECK(!node_comms_ok(&n, now));
+    CHECK_EQ(hw.a_out, 0x01);
+    CHECK_EQ(hw.b_out, 0x01);
+    CHECK(node_healthy(&n));
+    /* the link comes back with the next request */
+    CHECK_EQ(rd(RS, 3, IOB_R_STATUS, 1), MBR_OK);
+    CHECK(node_comms_ok(&n, now));
+    /* DIP 0 never answers, so its link never comes up */
+    boot(0, NODE_RST_POWER_ON, 0);
+    len = mbr_req_read(f, 0, IOB_R_MAGIC, 1);
+    node_frame(&n, RS, now, f, (uint16_t)len, false, tx);
+    CHECK(!node_comms_ok(&n, now));
+}
+
 void test_node(void)
 {
     t_startup();
@@ -427,4 +497,5 @@ void test_node(void)
     t_rules();
     t_usb();
     t_chips();
+    t_comms();
 }
