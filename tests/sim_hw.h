@@ -21,6 +21,10 @@ typedef struct {
     uint8_t a_out, b_out, relays;
     uint8_t a_ol_cfg, in_filter_cfg, in_wb_cfg;
     uint32_t a_configs, in_configs, a_writes, b_writes, b_services, in_reads, a_diags;
+    /* the address F-RAM */
+    uint8_t  stored_address;
+    int      addr_store_rc;              /* what the next stores return (NODE_HW_OK) */
+    uint32_t addr_stores;
     node_hw_t hw;
 } sim_hw_t;
 

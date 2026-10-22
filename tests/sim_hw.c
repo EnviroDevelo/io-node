@@ -59,11 +59,18 @@ static bool b_wdg_tripped(void *ctx) { return ((sim_hw_t *)ctx)->b_wdg_tripped; 
 static void b_wdg_service(void *ctx) { ((sim_hw_t *)ctx)->b_services++; }
 static bool b_supply_ok(void *ctx) { return ((sim_hw_t *)ctx)->field_b; }
 static void relays(void *ctx, uint8_t r) { ((sim_hw_t *)ctx)->relays = r; }
+static int addr_store(void *ctx, uint8_t a)
+{
+    sim_hw_t *s = ctx;
+    s->addr_stores++;
+    if (s->addr_store_rc == NODE_HW_OK) s->stored_address = a;
+    return s->addr_store_rc;
+}
 
 void sim_hw_init(sim_hw_t *s)
 {
     memset(s, 0, sizeof *s);
     s->field_a = s->field_b = true;
     s->hw = (node_hw_t){ s, a_config, a_write, a_diag, in_config, in_read,
-                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays };
+                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays, addr_store };
 }

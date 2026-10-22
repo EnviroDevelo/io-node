@@ -15,3 +15,20 @@ bool port_bank_b_fault(void) { return hp.b_fault; }
 bool port_bank_b_pgood(void) { return hp.b_supply; }
 void port_relays(uint8_t r) { hp.relays = r; }
 void port_delay_us(uint32_t us) { hp.delay_us += us; }
+
+int port_fram_read(uint8_t off, uint8_t *buf, uint8_t n)
+{
+    if (hp.fram_absent) return -1;
+    for (unsigned i = 0; i < n; i++) buf[i] = hp.fram[(uint8_t)(off + i)];
+    return 0;
+}
+
+int port_fram_write(uint8_t off, const uint8_t *buf, uint8_t n)
+{
+    if (hp.fram_absent) return -1;
+    hp.fram_writes++;
+    unsigned k = n;
+    if (hp.fram_cut > 0) { k = (unsigned)hp.fram_cut - 1u < n ? (unsigned)hp.fram_cut - 1u : n; hp.fram_cut = 0; }
+    for (unsigned i = 0; i < k; i++) hp.fram[(uint8_t)(off + i)] = buf[i];
+    return k == n ? 0 : -1;
+}

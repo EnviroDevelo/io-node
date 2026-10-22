@@ -5,7 +5,7 @@
  * Every function is called from the main loop only (never from an interrupt), and returns
  * quickly: an SPI transfer of a few bytes or a pin write.
  *
- * Chip drivers: drivers/ (ISO2H823V2.5 bank A, ISO1I813T inputs, ISO808-1 bank B).
+ * Chip drivers: drivers/ (ISO2H823V2.5 bank A, ISO1I813T inputs, ISO808A-1 bank B, nvcfg F-RAM).
  * Host: tests/sim_hw.c. */
 #ifndef NODE_HW_H
 #define NODE_HW_H
@@ -43,14 +43,16 @@ typedef struct node_hw {
     /* inputs (SPI). config: filter (ms, the chip's nearest at or above), wire-break per channel. */
     int  (*in_config)(void *ctx, uint8_t filter_ms, uint8_t wb_enable);
     int  (*in_read)(void *ctx, node_in_t *d);
-    /* bank B (GPIO) */
-    void (*b_write)(void *ctx, uint8_t outputs);           /* outputs 9-16, latched together (SYNC/LOAD) */
+    /* bank B (ISO808A-1 on SPI, status pins) */
+    void (*b_write)(void *ctx, uint8_t outputs);           /* outputs 9-16 */
     bool (*b_fault_pin)(void *ctx);                        /* common FAULT pin active */
     bool (*b_wdg_tripped)(void *ctx);                      /* bank B's own watchdog holds its outputs off */
     void (*b_wdg_service)(void *ctx);                      /* called every pass while the gate is open */
     bool (*b_supply_ok)(void *ctx);                        /* field supply B present */
     /* relays (GPIO, through the hardware gate) */
     void (*relays)(void *ctx, uint8_t relays);             /* bits 0-1 */
+    /* the node's address in the board's F-RAM (FW-60): written and read back; NODE_HW_* */
+    int  (*addr_store)(void *ctx, uint8_t address);
 } node_hw_t;
 
 #endif

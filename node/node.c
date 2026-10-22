@@ -36,7 +36,7 @@ bool node_boot_due(const node_t *n, uint32_t now) { return n->boot_pending && du
 
 bool node_fault_led(const node_t *n)
 {
-    return n->chip_a.fault || n->chip_in.fault || !field_a_ok(n) || n->timeout_latched || n->b_fault;
+    return n->chip_a.fault || n->chip_in.fault || !field_a_ok(n) || n->timeout_latched || n->b_fault || n->nv_fault;
 }
 
 bool node_comms_ok(const node_t *n, uint32_t now)
@@ -46,7 +46,7 @@ bool node_comms_ok(const node_t *n, uint32_t now)
 
 bool node_comms_led(const node_t *n, uint32_t now)
 {
-    if (n->address == 0) return true;                       /* FW-02: no address, steady on */
+    if (n->address == 0) return true;                       /* FW-02: address not set, steady on */
     if (!n->comms_seen) return false;                       /* waiting for the master */
     if (!node_comms_ok(n, now)) return (now / 125u) % 2u == 0;            /* lost now: 4 Hz */
     if (n->comms_lost) { uint32_t t = now % 1000u; return t < 100u || (t >= 250u && t < 350u); } /* double */
@@ -164,7 +164,8 @@ void node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t
 {
     memset(n, 0, sizeof *n);
     n->hw = hw;
-    n->address = boot->dip_address <= 15u ? boot->dip_address : 0u;       /* FW-02 */
+    n->address = boot->address <= 247u ? boot->address : 0u;             /* FW-02, FW-60 */
+    n->nv_fault = !boot->nv_ok;
     n->hw_rev = boot->hw_rev;
     memcpy(n->uid, boot->uid, sizeof n->uid);
     n->resets = boot->resets;
@@ -259,6 +260,7 @@ uint16_t node_reg(const node_t *n, uint16_t r)
     case IOB_R_N_OUT_B: return n->n_out_b;
     case IOB_R_N_RELAYS: return n->n_relays;
     case IOB_R_N_INPUTS: return n->n_inputs;
+    case IOB_R_NODE_ADDR: return n->address;
     default:
         if (r >= IOB_R_UID && r < IOB_R_UID + 6u) return n->uid[r - IOB_R_UID];
         return 0;                            /* reserved, FAULT_CLEAR and BOOTLOADER read 0 */
@@ -284,7 +286,7 @@ static bool value_ok(uint16_t r, uint16_t v)
 static uint8_t write_check(const node_t *n, node_port_t port, uint32_t now, uint16_t start, uint16_t cnt,
                            const uint8_t *data)
 {
-    bool touches_cmd = false;
+    bool touches_cmd = false, touches_addr = false;
     for (uint16_t i = 0; i < cnt; ++i) {
         uint16_t r = (uint16_t)(start + i), v = get16(data + 2u * i);
         if (r == IOB_R_BOOTLOADER) {                                         /* FW-57 */
@@ -292,11 +294,28 @@ static uint8_t write_check(const node_t *n, node_port_t port, uint32_t now, uint
             if (v != IOB_BOOT_KEY) return 3;
             continue;
         }
+        if (r == IOB_R_NODE_ADDR) {                                          /* FW-60 */
+            if (port != NODE_PORT_USB) return 2;
+            if (v > 247u) return 3;
+            touches_addr = true;
+            continue;
+        }
         if (!writable(r)) return 2;
         if (!value_ok(r, v)) return 3;
         if (r <= IOB_R_CMD_SEQ) touches_cmd = true;
     }
-    if (port == NODE_PORT_USB && touches_cmd && node_master_in_control(n, now)) return 4;   /* FW-56 */
+    if (port == NODE_PORT_USB && (touches_cmd || touches_addr) && node_master_in_control(n, now)) return 4;   /* FW-56 */
+    return 0;
+}
+
+/* FW-60: a write of NODE_ADDRESS is saved to the F-RAM (and read back) before anything is
+ * applied; exception 04 if that fails, and then nothing changes. 0: fine, or nothing to save. */
+static uint8_t addr_save(node_t *n, uint16_t start, uint16_t cnt, const uint8_t *data)
+{
+    if (start > IOB_R_NODE_ADDR || (uint32_t)start + cnt <= IOB_R_NODE_ADDR) return 0;
+    uint16_t v = get16(data + 2u * (IOB_R_NODE_ADDR - start));
+    if (n->hw->addr_store(n->hw->ctx, (uint8_t)v) != NODE_HW_OK) return 4;
+    n->nv_fault = false;
     return 0;
 }
 
@@ -323,6 +342,7 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
             if (v & 1u) { n->timeout_latched = false; n->wdg_latched = false; }
             if (v & 2u) n->comms_lost = false;                                /* FW-58 */
             break;
+        case IOB_R_NODE_ADDR: n->address = (uint8_t)v; break;                /* saved by addr_save */
         case IOB_R_BOOTLOADER:
             n->boot_pending = true;
             n->boot_at_ms = now + NODE_BOOT_DELAY_MS;
@@ -411,6 +431,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
     case 6: {
         if (len != 8u) { out = exception(tx, addr, fc, 3); break; }
         uint8_t e = write_check(n, port, now, a, 1, rx + 4);
+        if (!e) e = addr_save(n, a, 1, rx + 4);
         if (e) { out = exception(tx, addr, fc, e); break; }
         write_apply(n, port, now, a, 1, rx + 4);
         memcpy(tx, rx, 6);
@@ -420,6 +441,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
     case 16: {
         if (len < 9u || c == 0 || c > 123u || rx[6] != 2u * c || len != 9u + 2u * c) { out = exception(tx, addr, fc, 3); break; }
         uint8_t e = (uint32_t)a + c > NODE_REG_SPACE ? 2 : write_check(n, port, now, a, c, rx + 7);
+        if (!e) e = addr_save(n, a, c, rx + 7);
         if (e) { out = exception(tx, addr, fc, e); break; }
         write_apply(n, port, now, a, c, rx + 7);
         memcpy(tx, rx, 6);
@@ -435,6 +457,7 @@ uint16_t node_frame(node_t *n, node_port_t port, uint32_t now, const uint8_t *rx
         }
         uint8_t e = ((uint32_t)wa + wc > NODE_REG_SPACE || (uint32_t)a + c > NODE_REG_SPACE) ? 2
                     : write_check(n, port, now, wa, wc, rx + 11);
+        if (!e) e = addr_save(n, wa, wc, rx + 11);
         if (e) { out = exception(tx, addr, fc, e); break; }
         write_apply(n, port, now, wa, wc, rx + 11);            /* FW: write before read */
         out = read_regs(n, port, tx, addr, fc, a, c);

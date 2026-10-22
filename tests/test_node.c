@@ -14,9 +14,10 @@ static uint8_t tx[NODE_FRAME_MAX];
 static uint16_t regs[125];
 static uint8_t exc;
 
-static void boot(uint8_t dip, node_reset_t cause, uint16_t resets)
+static void boot(uint8_t address, node_reset_t cause, uint16_t resets)
 {
-    node_boot_t b = { dip, 2, cause, resets, { 0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666 } };
+    node_boot_t b = { .address = address, .nv_ok = true, .hw_rev = 2, .reset_cause = cause, .resets = resets,
+                      .uid = { 0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666 } };
     now = 1000;
     node_init(&n, &hw.hw, &b, now);
 }
@@ -78,7 +79,8 @@ static void t_startup(void)       /* FW-01, FW-02, FW-03, FW-04, FW-51, FW-52 */
     /* reserved addresses read 0 */
     CHECK_EQ(rd(RS, 3, 0, 80), MBR_OK);
     for (int r = 0; r < 80; r++)
-        if ((r > 2 && r < 16) || (r > 27 && r < 32) || (r > 37 && r < 64) || r == 79) CHECK_EQ(regs[r], 0);
+        if ((r > 2 && r < 16) || (r > 27 && r < 32) || (r > 38 && r < 64) || r == 79) CHECK_EQ(regs[r], 0);
+    CHECK_EQ(regs[IOB_R_NODE_ADDR], 3);                         /* FW-60 */
     /* nothing switches on, however long it runs, until the master writes register 0 */
     run(500);
     CHECK(!node_healthy(&n)); CHECK_EQ(hw.a_out | hw.b_out | hw.relays, 0);
@@ -173,7 +175,7 @@ static void t_hold(void)          /* FW-21, FW-26, FW-44 */
     run(1);      CHECK(!node_healthy(&n));
     /* the clock wrapping past 2^32 ms does not trip or stall the hold */
     sim_hw_init(&hw);
-    node_boot_t b = { 1, 1, NODE_RST_POWER_ON, 0, { 0 } };
+    node_boot_t b = { .address = 1, .nv_ok = true, .hw_rev = 1, .reset_cause = NODE_RST_POWER_ON };
     now = 0xFFFFFF00u;
     node_init(&n, &hw.hw, &b, now);
     CHECK_EQ(wr1(RS, 1, IOB_R_HOLD_DS, 10), MBR_OK);
@@ -588,6 +590,62 @@ static void t_inputs_hold(void)
     CHECK_EQ(rs_inputs(), 0x00);
 }
 
+/* FW-60: register 38, the node's own address, set over USB */
+static void t_address(void)
+{
+    sim_hw_init(&hw);
+    boot(0, NODE_RST_POWER_ON, 0);                              /* a new board: address not set */
+    uint8_t f[MBR_FRAME_MAX];
+    size_t len;
+    CHECK_EQ(rd(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 1), MBR_OK);
+    CHECK_EQ(regs[0], 0);
+    CHECK(node_comms_led(&n, now));                              /* steady on: not set */
+    /* out of range, or over RS-485: refused, nothing stored */
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 248), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(hw.addr_stores, 0u);
+    /* set it */
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 9), MBR_OK);
+    CHECK_EQ(hw.stored_address, 9);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 9);
+    len = mbr_req_read(f, 9, IOB_R_NODE_ADDR, 1);
+    CHECK_EQ(xfer(RS, f, len, 1), MBR_OK);                       /* answers on RS-485 at once */
+    CHECK_EQ(regs[0], 9);
+    CHECK_EQ(wr1(RS, 9, IOB_R_NODE_ADDR, 4), MBR_EXCEPTION); CHECK_EQ(exc, 2);   /* never over RS-485 */
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 9);
+    /* USB answers at the new address as well as 247 */
+    CHECK_EQ(rd(NODE_PORT_USB, 9, IOB_R_MAGIC, 1), MBR_OK);
+    /* not while the RS-485 master is in control (04), and not part of it either */
+    CHECK_EQ(rw(RS, 9, 0, 0, 1), MBR_OK);
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 4), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(hw.stored_address, 9);
+    run((uint32_t)n.hold_ds * 100u + 10u);                       /* the master has gone */
+    /* a request is checked whole before any save: 36..38 with a wrong bootloader key in 37 is 03,
+     * and the F-RAM is not touched */
+    uint32_t stores = hw.addr_stores;
+    uint16_t w[3] = { 0, 0, 4 };
+    len = mbr_req_write(f, NODE_USB_ADDRESS, IOB_R_FAULT_CLEAR, w, 3);
+    CHECK_EQ(xfer(NODE_PORT_USB, f, len, 0), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(hw.addr_stores, stores);
+    /* a failed save (F-RAM not answering, or read back wrong): 04, the address stays */
+    hw.addr_store_rc = NODE_HW_READBACK;
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 4), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    CHECK_EQ(reg(IOB_R_NODE_ADDR), 9);
+    CHECK_EQ(hw.stored_address, 9);
+    hw.addr_store_rc = NODE_HW_OK;
+    /* 0 takes a board off the bus */
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 0), MBR_OK);
+    len = mbr_req_read(f, 9, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, RS, now, f, (uint16_t)len, false, tx), 0);
+    /* the F-RAM did not answer at start-up: address 0, fault LED, cleared by a good save */
+    node_boot_t b = { .address = 0, .nv_ok = false, .hw_rev = 2, .reset_cause = NODE_RST_POWER_ON };
+    node_init(&n, &hw.hw, &b, now);
+    run(10);
+    CHECK(node_fault_led(&n));
+    CHECK_EQ(wr1(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 6), MBR_OK);
+    run(10);
+    CHECK(!node_fault_led(&n));
+}
+
 void test_node(void)
 {
     t_startup();
@@ -598,4 +656,5 @@ void test_node(void)
     t_chips();
     t_comms();
     t_inputs_hold();
+    t_address();
 }

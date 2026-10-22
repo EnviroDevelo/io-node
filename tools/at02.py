@@ -10,7 +10,7 @@ plus the identification block (register map v1) and the node's request framing r
 Wiring: a USB-RS485 adapter on the board's bus terminals, the main board DISCONNECTED (two masters
 on one bus collide). 115200 baud, 8N1. Or the board's own USB-C port with --usb.
 
-  python at02.py COM5 --address 3            RS-485, DIP switch set to 3
+  python at02.py COM5 --address 3            RS-485, board address 3 (set with set_address.py)
   python at02.py COM7 --usb                  USB-C port (answers at 247)
   python at02.py /dev/ttyUSB0 -a 3 -v        Linux, show every frame
 
@@ -33,14 +33,14 @@ import time
 # ---- register map v1 (platform/include/iobus.h) ----
 R_OUT_CMD, R_RELAY_CMD, R_CMD_SEQ = 0, 1, 2
 R_STATUS, R_OUT_APPLIED, R_RELAY_APPLIED, R_CMD_ECHO, R_RX_ERRORS = 16, 18, 19, 25, 26
-R_HOLD_DS, R_FILTER_MS, R_WB_ENABLE, R_OL_ENABLE, R_FAULT_CLEAR, R_BOOTLOADER = 32, 33, 34, 35, 36, 37
+R_HOLD_DS, R_FILTER_MS, R_WB_ENABLE, R_OL_ENABLE, R_FAULT_CLEAR, R_BOOTLOADER, R_NODE_ADDR = 32, 33, 34, 35, 36, 37, 38
 R_MAGIC, R_MAP_VERSION, R_HW_REV, R_FW_VERSION, R_FW_BUILD, R_UID = 64, 65, 66, 67, 68, 69
 R_N_OUT_A, R_N_OUT_B, R_N_RELAYS, R_N_INPUTS = 75, 76, 77, 78
 REG_SPACE = 80
 MAGIC, MAP_VERSION, BOOT_KEY = 0x494F, 1, 0xB007
 USB_ADDRESS = 247
 WRITABLE = {0, 1, 2, 32, 33, 34, 35, 36}            # 37 too, but over USB only and only the key
-DEFINED = set(range(0, 3)) | set(range(16, 28)) | set(range(32, 38)) | set(range(64, 79))
+DEFINED = set(range(0, 3)) | set(range(16, 28)) | set(range(32, 39)) | set(range(64, 79))
 RESERVED = [r for r in range(REG_SPACE) if r not in DEFINED]
 READ_ZERO = RESERVED + [R_FAULT_CLEAR, R_BOOTLOADER]   # write-only registers read 0 as well
 
@@ -230,7 +230,7 @@ def expect_none(run, r, text):
 def main():
     ap = argparse.ArgumentParser(description="AT-02 register-rule conformance test for the CEMS I/O board node.")
     ap.add_argument("port", help="serial port: COM5, /dev/ttyUSB0 ...")
-    ap.add_argument("-a", "--address", type=int, help="node address: the DIP switch (1..15); with --usb default 247")
+    ap.add_argument("-a", "--address", type=int, help="node address (1..247, see set_address.py); with --usb default 247")
     ap.add_argument("--usb", action="store_true", help="the board's USB-C port instead of RS-485")
     ap.add_argument("-b", "--baud", type=int, default=115200)
     ap.add_argument("-t", "--timeout", type=float, default=0.2, help="reply timeout, s (default 0.2)")
@@ -241,7 +241,7 @@ def main():
 
     if args.address is None:
         if not args.usb:
-            ap.error("--address is required on RS-485 (the board's DIP switch setting, 1..15)")
+            ap.error("--address is required on RS-485 (the board's address, 1..247; set_address.py shows it)")
         args.address = USB_ADDRESS
     if not 1 <= args.address <= 247:
         ap.error("address must be 1..247")
@@ -262,7 +262,7 @@ def main():
         saved = node.regs(R_HOLD_DS, 4)
     except IOError as e:
         run.out("\nCannot reach the node: %s" % e)
-        run.out("Check the port, the address (DIP switch), A/B wiring, termination and that the main board is disconnected.")
+        run.out("Check the port, the address (set_address.py over USB shows it), A/B wiring, termination and that the main board is disconnected.")
         return 2
 
     try:
@@ -305,7 +305,7 @@ def checks(run, node, usb, ident, saved):
         run.check(not bad, "reserved addresses (%d of them) and FAULT_CLEAR / BOOTLOADER read 0" % len(READ_ZERO),
                   "non-zero: " + ", ".join("%d=0x%04X" % (r, v[r]) for r in bad))
         if run.check(r4.ok and len(r4.regs()) == REG_SPACE, "FC04 reads the same register space", r4.what()):
-            stable = READ_ZERO + list(range(32, 36)) + list(range(64, 79))
+            stable = READ_ZERO + list(range(32, 36)) + [R_NODE_ADDR] + list(range(64, 79))
             diff = [r for r in stable if r3.regs()[r] != r4.regs()[r]]
             run.check(not diff, "FC03 and FC04 agree", "differ at " + str(diff))
     for fc in (3, 4):
@@ -327,10 +327,16 @@ def checks(run, node, usb, ident, saved):
     expect_exc(run, node.writen(78, [0, 0]), 2, "FC16 78..79 (read-only) -> 02")
     expect_exc(run, node.writen(79, [0, 0]), 2, "FC16 79..80 (past the map) -> 02")
     expect_exc(run, node.rw(R_STATUS, 12, R_STATUS, [0]), 2, "FC23 writing STATUS -> 02")
+    own = node.regs(R_NODE_ADDR, 1)[0]
     if usb:
         expect_exc(run, node.write1(R_BOOTLOADER, 0x1234), 3, "FC06 BOOTLOADER with a wrong key over USB -> 03")
+        expect_exc(run, node.write1(R_NODE_ADDR, 248), 3, "FC06 NODE_ADDRESS 248 over USB -> 03")
+        run.out("  info  the board's own address (register 38): %s" % (own if own else "not set"))
     else:
         expect_exc(run, node.write1(R_BOOTLOADER, BOOT_KEY), 2, "FC06 BOOTLOADER over RS-485, even with the key -> 02")
+        expect_exc(run, node.write1(R_NODE_ADDR, own), 2, "FC06 NODE_ADDRESS over RS-485 -> 02 (USB only)")
+        run.check(own == node.addr, "NODE_ADDRESS (38) reads the address it answers at", "reads %d" % own)
+    run.check(node.regs(R_NODE_ADDR, 1)[0] == own, "  ... NODE_ADDRESS unchanged")
 
     # ---------------- out-of-range values ----------------
     run.section("Out-of-range values -> 03, nothing changed")
@@ -370,10 +376,11 @@ def checks(run, node, usb, ident, saved):
     # ---------------- addressing and CRC ----------------
     run.section("Another address, broadcast and bad CRC -> no reply")
     errs0 = node.regs(R_RX_ERRORS, 1)[0]
-    if usb:                                            # USB also answers at the DIP address (1..15)
-        others = [16, 200, 246]
+    if usb:                                            # USB also answers at the board's own address
+        own = node.regs(R_NODE_ADDR, 1)[0]
+        others = [a for a in (16, 200, 246, 9) if a != own][:3]
     else:                                              # 247 is the USB service address only
-        others = [node.addr % 15 + 1, 16, 200, USB_ADDRESS]
+        others = [a for a in (node.addr % 247 + 1, 200, 246, USB_ADDRESS) if a != node.addr]
     for a in others:
         expect_none(run, node.req([3] + u16(R_MAGIC, 1), addr=a), "FC03 to address %d" % a)
     expect_none(run, node.req([6] + u16(R_HOLD_DS, hold), addr=0), "FC06 broadcast (address 0)")

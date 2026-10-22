@@ -150,7 +150,7 @@ def ask_int(prompt, default):
 def main():
     ap = argparse.ArgumentParser(description="AT-13 digital input bench test for the CEMS I/O board node.")
     ap.add_argument("port", help="serial port: COM7, /dev/ttyACM0 ...")
-    ap.add_argument("-a", "--address", type=int, help="node address: the DIP switch (1..15); with --usb default 247")
+    ap.add_argument("-a", "--address", type=int, help="node address (1..247, see set_address.py); with --usb default 247")
     ap.add_argument("--usb", action="store_true", help="the board's USB-C port instead of RS-485")
     ap.add_argument("-b", "--baud", type=int, default=115200)
     ap.add_argument("--loopback", action="store_true", help="bank B outputs 9-16 wired to inputs 1-8")
@@ -164,7 +164,7 @@ def main():
     args = ap.parse_args()
     if args.address is None:
         if not args.usb:
-            ap.error("--address is required on RS-485 (the board's DIP switch setting, 1..15)")
+            ap.error("--address is required on RS-485 (the board's address, 1..247; set_address.py shows it)")
         args.address = USB_ADDRESS
     for name in ("pulse_input", "wb_input", "other_input"):
         if not 1 <= getattr(args, name) <= 8:

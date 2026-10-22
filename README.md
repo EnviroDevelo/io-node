@@ -18,9 +18,11 @@ reference this firmware is compared against byte for byte.
 | `node/node.c`, `node.h` | The core: register map, Modbus slave (functions 03, 04, 06, 16, 23), write rules, hold time, gate, HEALTHY condition, chip health, USB rules. Pure C, no hardware. |
 | `node/node_hw.h` | What the core needs from the board: the three chips, bank B's status pins and the relays. |
 | `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
-| `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, DIP switch, straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
+| `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, address F-RAM (I2C), straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
 | `tools/at02.py` | AT-02 conformance test for a real board, from a PC (below). |
 | `tools/at13.py` | AT-13 digital input bench test, from a PC (below). |
+| `tools/set_address.py` | Read or set a board's address over its USB-C port (FW-60, below). |
+| `drivers/nvcfg.c` | The address record in the board's F-RAM: two copies, CRC, sequence number. |
 | `tests/` | Host tests (below). `tests/platform/iob_node_real.c` puts this firmware in place of the platform's simulated node. |
 
 ## Building and testing
@@ -39,10 +41,10 @@ Results on 22 Oct 2026:
 
 | Check | Result |
 |---|---|
-| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 601 checks, 0 failed (node 438, comparison 14, drivers and the whole board on them 149) |
+| `make test` (gcc, -Werror, AddressSanitizer, UBSan) | 725 checks, 0 failed (node 469, comparison 14, drivers, F-RAM record and the whole board on them 242) |
 | Comparison with `iob_node_sim.c` | 200,000 random frames (reads, writes, function 23, bad CRCs, runts, wrong addresses, unknown functions, hold time running out) with a changing outside world: every reply byte-identical, every register equal after every frame |
 | `make master-test` | 13,971 platform checks, 0 failed, with this firmware answering the master in every I/O board test (connect, settings, outputs, inputs, faults, lost and back, latched comms fault, short input openings, node restart, hold time) |
-| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 8.4 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
+| `make target` | Compiles and links with -Werror for Cortex-M0+, also as a product build (`EXTRA=-DNODE_PRODUCT_BUILD`): 9.2 KB flash, 3.5 KB RAM (of 256 KB and 144 KB) |
 | On a board | Not yet: no hardware |
 
 ## AT-13 on a board: tools/at13.py
@@ -67,6 +69,21 @@ Tried here against the firmware on a pseudo-terminal with a model of the ISO1I81
 over RS-485, and with the filter switched off (`-m 5`) the 5 ms check fails as it should. A 12 ms
 pulse is visible in register 17 for about 11-12 ms (the chip's up/down-counter filter delays both
 edges by its 10 ms).
+
+## Setting a board's address: tools/set_address.py
+
+The address is set in software (no DIP switch) and kept in the board's F-RAM (MB85RC04V or
+FM24CL04B), a separate chip that programming the STM32 can never reach, so a firmware update,
+even with a full chip erase, never changes it. A new board has address 0: silent on RS-485, comms
+LED steady on. Over its USB-C port:
+
+```
+python tools\set_address.py COM7               # shows UID, hardware and firmware, the address
+python tools\set_address.py COM7 --address 3   # set (1..247), saved and read back
+python tools\set_address.py COM7 --clear       # 0: off the bus
+```
+
+The board refuses a change (04) while the main board is controlling it: unplug RS-485 first.
 
 ## Main loop (port/stm32g0/node_main.c)
 
@@ -115,7 +132,7 @@ How the chips' diagnostics become the node's registers:
 | Req | Where | Tested |
 |---|---|---|
 | FW-01 | `node_init` (all off, gate closed); HEALTHY only from `node_healthy` | `t_startup`, `t_board` |
-| FW-02 | `board_boot_info` (DIP once); `node_frame` (DIP 0 never answers); `node_comms_led` steady on | `t_rules` |
+| FW-02 | `board_boot_info` (address from the F-RAM once); `node_frame` (0 = not set, never answers); `node_comms_led` steady on | `t_rules`, `t_address` |
 | FW-03 | `node_init` defaults, WDG_RESET from the reset cause; `reset_cause` clears the flags | `t_startup` |
 | FW-04 | `config_a` / `config_in` before anything opens; retry every 1 s; drivers read every setting back | `t_chips`, `t_iso2h823`, `t_iso1i813t` |
 | FW-10, 11 | `rs485_g0.c` receiver timeout 202 bit times; reply from the main loop | target build; AT-03 on the bench |
@@ -137,9 +154,10 @@ How the chips' diagnostics become the node's registers:
 | FW-51 | `node_reg`, reserved read 0 | `t_startup`, comparison |
 | FW-52 | `node/node_version.h` | `t_startup` |
 | FW-53 | `make target` -Werror; iobus.h and mb_rtu.c used in place | target build |
-| FW-55 | `node_comms_led` (flash twice a second / double flash while a loss is latched / 4 Hz lost / off / DIP 0 steady), fault LED; power LED is hardware | `t_comms`; `node_main` |
-| FW-56 | USB at the DIP address or 247; exception 04 while the master is in control | `t_usb` |
+| FW-55 | `node_comms_led` (flash twice a second / double flash while a loss is latched / 4 Hz lost / off / steady while the address is not set), fault LED; power LED is hardware | `t_comms`; `node_main` |
+| FW-56 | USB at the node's address or 247; exception 04 while the master is in control | `t_usb` |
 | FW-57 | register 37 over USB; outputs off 100 ms, then a reset into the bootloader | `t_usb`, `t_rules` |
+| FW-60 | register 38 over USB only (0..247, 04 while the master is in control); `nvcfg.c` saves it to the F-RAM and reads it back before the reply; 04 and nothing changed if that fails; `board_g0.c` I2C with the write-protect pin released for the write only | `t_address`, `t_nvcfg` (power cut at every byte, 600 saves, spoilt slot, no chip), `t_board_address`; target build |
 | FW-58 | `node_comms_ok`, `comms_check`: losing the link latches STATUS COMMS_LOST; only FAULT_CLEAR bit 1 or a restart clears it; outputs follow the hold time | `t_comms`, comparison; platform `t_comms_latch` |
 | FW-59 | `node_heartbeat_led`: 1 Hz from the main loop, nothing else | `t_comms`; target build |
 
@@ -152,7 +170,7 @@ A USB-RS485 adapter on the board's bus terminals, **main board disconnected**, t
 
 ```
 pip install pyserial
-python tools\at02.py COM5 --address 3      # RS-485; the DIP switch setting
+python tools\at02.py COM5 --address 3      # RS-485; the board's address
 python tools\at02.py COM7 --usb            # the board's USB-C port (address 247)
 ```
 
@@ -194,7 +212,7 @@ With healthy chips the two are byte-identical. They differ where the simulator h
 |---|---|
 | N1 | Main loop pass every 1 ms (FW-21's 5 ms needs faster than FW-22's 10 ms minimum). |
 | N2 | Bootloader entry (FW-57) through a flag in `.noinit` and a software reset, then the jump before HAL_Init: the watchdog cannot be stopped once started, and it is stopped after a reset. |
-| N3 | DIP ON = 0 V with pull-ups; DIP1 = bit 0. HW_REV = 1 + strap value (two straps: 1..4). |
+| N3 | The address is software only (Gary, 23 Oct): F-RAM, set over USB; a new board is 0 (silent on RS-485). HW_REV = 1 + strap value (two straps: 1..4). |
 | N4 | UID: register 69 = bits 0-15 of the first UID word, 70 = bits 16-31, and so on. |
 | N5 | USB frames end after 2 ms without a packet; USB frames are only answered while VBUS is present. |
 | N6 | The activity LED pulses 20 ms for each valid frame addressed to the node on either port. The fault LED shows a chip fault, field supply A missing, a latched TIMEOUT or a bank B fault. |

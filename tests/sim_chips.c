@@ -169,6 +169,7 @@ void sim_chips_reset(void)
     sa.diagcfg = 0xFFu;
     sa.s_uv = sa.s_te = sa.s_w4p = true;            /* GLERR 46h, INTERR 07h after power-up */
     memset(&hp, 0, sizeof hp);
+    memset(hp.fram, 0xFF, sizeof hp.fram);              /* a new F-RAM is erased */
     hp.spi = spi;
     hp.b_supply = true;
 }

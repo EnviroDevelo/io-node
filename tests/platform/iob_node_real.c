@@ -40,7 +40,7 @@ static void push(iob_node_t *n, shadow_t *s)
     h->in_internal_fault = n->in_chip_fault;
     h->a_internal_fault = n->out_a_chip_fault;
     node_t *m = &s->me;
-    m->address = n->address;                         /* the master tests use addresses beyond the DIP's 15 */
+    m->address = n->address;
     m->magic = n->magic; m->map_version = n->map_version;
     m->n_out_a = n->n_out_a; m->n_out_b = n->n_out_b; m->n_relays = n->n_relays; m->n_inputs = n->n_inputs;
     m->fw_version = n->fw_version; m->hw_rev = n->hw_rev; m->fw_build = 1;
@@ -66,7 +66,7 @@ static void pull(iob_node_t *n, const shadow_t *s)
 static void boot(iob_node_t *n, shadow_t *s, node_reset_t cause, uint16_t resets, uint32_t now)
 {
     sim_hw_init(&s->hw);
-    node_boot_t b = { (uint8_t)(n->address <= 15 ? n->address : 0), (uint8_t)n->hw_rev, cause, resets, { 0 } };
+    node_boot_t b = { .address = n->address, .nv_ok = true, .hw_rev = (uint8_t)n->hw_rev, .reset_cause = cause, .resets = resets };
     memcpy(b.uid, n->uid, sizeof b.uid);
     push(n, s);
     node_init(&s->me, &s->hw.hw, &b, now);

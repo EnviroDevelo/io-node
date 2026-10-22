@@ -4,7 +4,7 @@
  * silence, as the USART's receiver timeout does on the board.
  *
  *   build/vnode [-a address] [-u] [-m mutation]
- *     -a  DIP address 1..15 (default 1)
+ *     -a  the node's address 0..247, as if read from its F-RAM (default 1; 0 = not set)
  *     -u  behave as the USB port (answers at 247 too; RX_ERRORS not counted)
  *     -m  deliberately break one rule, to show the script catches it:
  *         1 answer another address too, 2 do not count bad CRCs, 3 answer unknown functions
@@ -73,7 +73,8 @@ int main(int argc, char **argv)
     static node_t n;
     sim_hw_init(&hw);
     hw.field_a = hw.field_b = true;
-    node_boot_t b = { (uint8_t)addr, 1, NODE_RST_POWER_ON, 0, { 0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666 } };
+    node_boot_t b = { .address = (uint8_t)addr, .nv_ok = true, .hw_rev = 1, .reset_cause = NODE_RST_POWER_ON,
+                      .uid = { 0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666 } };
     node_init(&n, &hw.hw, &b, now_ms());
     node_port_t port = usb ? NODE_PORT_USB : NODE_PORT_RS485;
 

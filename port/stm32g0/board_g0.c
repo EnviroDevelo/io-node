@@ -4,10 +4,16 @@
 #include "board_g0.h"
 #include "main.h"
 #include "node_port.h"
+#include "nvcfg.h"
 
 #ifndef NODE_SPI
 #define NODE_SPI SPI1
 #endif
+#ifndef NODE_I2C
+#define NODE_I2C I2C2                    /* the address F-RAM; CubeMX sets its pins and TIMINGR (100 kHz) */
+#endif
+#define FRAM_ADDR7 0x50u                 /* MB85RC04V / FM24CL04B with A2, A1 tied low; page bit (A8) 0 */
+#define I2C_WAIT_MS 3u
 #define SYSMEM_BASE 0x1FFF0000u          /* STM32G0B1 system memory (ST bootloader), AN2606 */
 #define BOOT_MAGIC  0xB007B007u
 #define CNT_MAGIC   0x52535443u           /* "RSTC" */
@@ -61,9 +67,10 @@ void board_boot_info(node_boot_t *b)
         noinit.resets = (noinit.resets + 1u) & 0xFFFFu;             /* RESETS wraps */
     noinit.resets_inv = ~noinit.resets;
     b->resets = (uint16_t)noinit.resets;
-    /* DIP switch to 0 V when ON, pull-ups: ON = 1 (FW-02, HW-03). DIP1 is bit 0. */
-    b->dip_address = (uint8_t)((pin_get(DIP1_GPIO_Port, DIP1_Pin) ? 0u : 1u) | (pin_get(DIP2_GPIO_Port, DIP2_Pin) ? 0u : 2u) |
-                               (pin_get(DIP3_GPIO_Port, DIP3_Pin) ? 0u : 4u) | (pin_get(DIP4_GPIO_Port, DIP4_Pin) ? 0u : 8u));
+    /* the node's address from the board's F-RAM (FW-02, FW-60): 0 when not set or not readable */
+    uint8_t a = 0;
+    b->nv_ok = nvcfg_load(&a) >= 0;
+    b->address = a;
     /* board revision straps: 0..3 -> HW_REV 1..4 (HW-11) */
     b->hw_rev = (uint8_t)(1u + (pin_get(HWREV0_GPIO_Port, HWREV0_Pin) ? 1u : 0u) + (pin_get(HWREV1_GPIO_Port, HWREV1_Pin) ? 2u : 0u));
     /* 96-bit unique ID: register 69 = bits 0-15 of the first word, 70 = bits 16-31, ... */
@@ -152,4 +159,83 @@ void port_delay_us(uint32_t us)
         last = v;
         left = d >= left ? 0u : left - d;
     }
+}
+
+/* ---------------- address F-RAM on I2C (node_port.h, FW-60) ---------------- */
+/* Register level, master only, polled with short timeouts. The write-protect pin (FRAM_WP, high =
+ * protected, pulled up on the board so it is protected through reset) is released for the length
+ * of one write only. F-RAM writes at bus speed: no write cycle to wait for. */
+
+static void i2c_recover(void)            /* PE low resets the peripheral's state machine */
+{
+    NODE_I2C->CR1 &= ~I2C_CR1_PE;
+    for (volatile int i = 0; i < 8; i++) (void)NODE_I2C->CR1;
+    NODE_I2C->CR1 |= I2C_CR1_PE;
+}
+
+static void i2c_start(uint32_t nbytes, bool rd, bool autoend)
+{
+    NODE_I2C->CR2 = (FRAM_ADDR7 << 1) | (rd ? I2C_CR2_RD_WRN : 0u) | (nbytes << I2C_CR2_NBYTES_Pos) |
+                    (autoend ? I2C_CR2_AUTOEND : 0u) | I2C_CR2_START;
+}
+
+/* wait for flag; 0, -1 on a NACK (the bus is stopped and the flags cleared), -2 on a timeout */
+static int i2c_wait(uint32_t flag)
+{
+    uint32_t t0 = HAL_GetTick();
+    for (;;) {
+        uint32_t isr = NODE_I2C->ISR;
+        if (isr & I2C_ISR_NACKF) {
+            if (!(NODE_I2C->CR2 & I2C_CR2_AUTOEND)) NODE_I2C->CR2 |= I2C_CR2_STOP;
+            uint32_t t1 = HAL_GetTick();
+            while (!(NODE_I2C->ISR & I2C_ISR_STOPF) && HAL_GetTick() - t1 <= I2C_WAIT_MS) {}
+            NODE_I2C->ICR = I2C_ICR_NACKCF | I2C_ICR_STOPCF;
+            return -1;
+        }
+        if (isr & flag) return 0;
+        if (HAL_GetTick() - t0 > I2C_WAIT_MS) { i2c_recover(); return -2; }
+    }
+}
+
+static int i2c_stopped(void)
+{
+    int rc = i2c_wait(I2C_ISR_STOPF);
+    NODE_I2C->ICR = I2C_ICR_STOPCF;
+    return rc;
+}
+
+int port_fram_read(uint8_t off, uint8_t *buf, uint8_t n)
+{
+    if (n == 0) return 0;
+    if (NODE_I2C->ISR & I2C_ISR_BUSY) i2c_recover();
+    i2c_start(1u, false, false);                          /* the word address, then a repeated start */
+    if (i2c_wait(I2C_ISR_TXIS)) return -1;
+    NODE_I2C->TXDR = off;
+    if (i2c_wait(I2C_ISR_TC)) return -1;
+    i2c_start(n, true, true);
+    for (unsigned i = 0; i < n; i++) {
+        if (i2c_wait(I2C_ISR_RXNE)) return -1;
+        buf[i] = (uint8_t)NODE_I2C->RXDR;
+    }
+    return i2c_stopped() ? -1 : 0;
+}
+
+int port_fram_write(uint8_t off, const uint8_t *buf, uint8_t n)
+{
+    if (n == 0) return 0;
+    if (NODE_I2C->ISR & I2C_ISR_BUSY) i2c_recover();
+    pin_set(FRAM_WP_GPIO_Port, FRAM_WP_Pin, false);           /* writes allowed */
+    int rc = 0;
+    i2c_start(n + 1u, false, true);
+    if (i2c_wait(I2C_ISR_TXIS)) rc = -1;
+    else {
+        NODE_I2C->TXDR = off;
+        for (unsigned i = 0; i < n && !rc; i++) {
+            if (i2c_wait(I2C_ISR_TXIS)) rc = -1;
+            else NODE_I2C->TXDR = buf[i];
+        }
+    }
+    if (!rc && i2c_stopped()) rc = -1;
+    pin_set(FRAM_WP_GPIO_Port, FRAM_WP_Pin, true);            /* protected again */
+    return rc;
 }

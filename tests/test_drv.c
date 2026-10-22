@@ -4,6 +4,7 @@
 #include "drivers.h"
 #include "host_port.h"
 #include "mb_rtu.h"
+#include "nvcfg.h"
 #include "node.h"
 #include "sim_chips.h"
 #include "test.h"
@@ -194,7 +195,7 @@ static void t_board(void)
 {
     sim_chips_reset();
     node_t n;
-    node_boot_t b = { 1, 1, NODE_RST_POWER_ON, 0, { 0 } };
+    node_boot_t b = { .address = 1, .nv_ok = true, .hw_rev = 1, .reset_cause = NODE_RST_POWER_ON };
     node_init(&n, drivers_hw(), &b, 0);
     CHECK(!(node_reg(&n, IOB_R_STATUS) & IOB_ST_OUT_A_CHIP));
     CHECK_EQ(sa.drive, 0); CHECK_EQ(sb.out, 0); CHECK_EQ(hp.relays, 0);
@@ -250,8 +251,99 @@ static void t_board(void)
     CHECK_EQ(si.bad_crc_in + si.wrong_mode + si.wrong_len, 0);
 }
 
+/* FW-60: the address record in the F-RAM: two slots, newest wins, a power cut loses nothing */
+static void t_nvcfg(void)
+{
+    sim_chips_reset();
+    uint8_t a = 99;
+    CHECK_EQ(nvcfg_load(&a), NVCFG_BLANK);                       /* a new board: not set */
+    CHECK_EQ(a, 0);
+    CHECK_EQ(nvcfg_store_address(0, 5), NODE_HW_OK);
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 5);
+    CHECK(hp.fram[0] == 'N' && hp.fram[4] == 5);                     /* slot 0 first */
+    CHECK_EQ(nvcfg_store_address(0, 7), NODE_HW_OK);
+    CHECK(hp.fram[8] == 'N' && hp.fram[12] == 7);                    /* then the other slot */
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 7);
+    uint32_t w = hp.fram_writes;
+    CHECK_EQ(nvcfg_store_address(0, 7), NODE_HW_OK);             /* unchanged: not written again */
+    CHECK_EQ(hp.fram_writes, w);
+    /* power cut part-way through every possible byte of a save: the old address survives */
+    for (int cut = 1; cut <= 8; cut++) {
+        CHECK_EQ(nvcfg_load(&a), NVCFG_OK);
+        uint8_t before = a;
+        hp.fram_cut = cut;
+        CHECK(nvcfg_store_address(0, (uint8_t)(before + 1u)) != NODE_HW_OK);
+        CHECK_EQ(nvcfg_load(&a), NVCFG_OK);
+        CHECK_EQ(a, before);
+        CHECK_EQ(nvcfg_store_address(0, (uint8_t)(before + 1u)), NODE_HW_OK);   /* and the next save works */
+        CHECK_EQ(nvcfg_load(&a), NVCFG_OK);
+        CHECK_EQ(a, (uint8_t)(before + 1u));
+    }
+    /* many saves: the sequence number wraps and the newest is always found */
+    bool all = true;
+    for (unsigned i = 0; i < 600; i++) {
+        uint8_t v = (uint8_t)(1u + i % 247u);
+        all &= nvcfg_store_address(0, v) == NODE_HW_OK;
+        all &= nvcfg_load(&a) == NVCFG_OK && a == v;
+    }
+    CHECK(all);
+    /* a spoilt newest slot: the other is used */
+    CHECK_EQ(nvcfg_store_address(0, 20), NODE_HW_OK);
+    CHECK_EQ(nvcfg_store_address(0, 21), NODE_HW_OK);
+    unsigned newest = hp.fram[4] == 21 ? 0u : 8u;
+    hp.fram[newest + 5] ^= 0x40;
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 20);
+    /* no F-RAM at start-up: address 0; it is never written blind into the newer slot later */
+    CHECK_EQ(nvcfg_store_address(0, 30), NODE_HW_OK);
+    CHECK_EQ(nvcfg_store_address(0, 31), NODE_HW_OK);
+    unsigned newer = hp.fram[4] == 31 ? 0u : 8u;
+    hp.fram_absent = true;
+    CHECK_EQ(nvcfg_load(&a), NVCFG_NO_CHIP); CHECK_EQ(a, 0);
+    CHECK_EQ(nvcfg_store_address(0, 32), NODE_HW_NO_ANSWER);
+    hp.fram_absent = false;
+    CHECK_EQ(nvcfg_store_address(0, 32), NODE_HW_OK);
+    CHECK_EQ(hp.fram[newer + 4], 31);                              /* the newer slot kept */
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK); CHECK_EQ(a, 32);
+}
+
+/* the whole node: address set over USB lands in the F-RAM, the RS-485 side moves to it, and a
+ * restart (as after a firmware update, which cannot reach the F-RAM) comes back with it */
+static void t_board_address(void)
+{
+    sim_chips_reset();
+    uint8_t a;
+    node_boot_t b = { .hw_rev = 1, .reset_cause = NODE_RST_POWER_ON };
+    b.nv_ok = nvcfg_load(&a) >= 0;
+    b.address = a;
+    node_t n;
+    node_init(&n, drivers_hw(), &b, 0);
+    uint8_t f[64], tx[NODE_FRAME_MAX];
+    size_t len = mbr_req_read(f, 1, IOB_R_MAGIC, 1);
+    CHECK_EQ(node_frame(&n, NODE_PORT_RS485, 1, f, (uint16_t)len, false, tx), 0);     /* not set: silent */
+    CHECK(node_comms_led(&n, 1));
+    len = mbr_req_write1(f, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 12);
+    CHECK_EQ(node_frame(&n, NODE_PORT_USB, 2, f, (uint16_t)len, false, tx), 8);
+    CHECK_EQ(node_reg(&n, IOB_R_NODE_ADDR), 12);
+    len = mbr_req_read(f, 12, IOB_R_MAGIC, 1);
+    CHECK(node_frame(&n, NODE_PORT_RS485, 3, f, (uint16_t)len, false, tx) > 0);       /* at once */
+    /* restart, as after any firmware update */
+    CHECK_EQ(nvcfg_load(&a), NVCFG_OK);
+    b.address = a; b.nv_ok = true;
+    node_init(&n, drivers_hw(), &b, 10);
+    CHECK_EQ(node_reg(&n, IOB_R_NODE_ADDR), 12);
+    /* the F-RAM stops answering: the write is refused with 04 and nothing changes */
+    hp.fram_absent = true;
+    len = mbr_req_write1(f, NODE_USB_ADDRESS, IOB_R_NODE_ADDR, 13);
+    CHECK_EQ(node_frame(&n, NODE_PORT_USB, 11, f, (uint16_t)len, false, tx), 5);
+    CHECK_EQ(tx[1], 0x86); CHECK_EQ(tx[2], 4);
+    CHECK_EQ(node_reg(&n, IOB_R_NODE_ADDR), 12);
+    hp.fram_absent = false;
+}
+
 void test_drv(void)
 {
+    t_nvcfg();
+    t_board_address();
     t_crc5();
     t_iso2h823();
     t_iso1i813t();

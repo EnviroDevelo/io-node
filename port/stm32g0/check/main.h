@@ -19,14 +19,8 @@
 #define CS_A_Pin            GPIO_PIN_8
 #define CS_IN_GPIO_Port     GPIOA
 #define CS_IN_Pin           GPIO_PIN_15
-#define DIP1_GPIO_Port      GPIOC
-#define DIP1_Pin            GPIO_PIN_13
-#define DIP2_GPIO_Port      GPIOC
-#define DIP2_Pin            GPIO_PIN_14
-#define DIP3_GPIO_Port      GPIOC
-#define DIP3_Pin            GPIO_PIN_15
-#define DIP4_GPIO_Port      GPIOD
-#define DIP4_Pin            GPIO_PIN_0
+#define FRAM_WP_GPIO_Port     GPIOC
+#define FRAM_WP_Pin           GPIO_PIN_13
 #define HWREV0_GPIO_Port    GPIOD
 #define HWREV0_Pin          GPIO_PIN_1
 #define HWREV1_GPIO_Port    GPIOD

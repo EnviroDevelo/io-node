@@ -27,7 +27,7 @@ outputs off before this code runs, HW-05). Inputs as listed.
 | `HEALTHY` | GPIO output | feeds the monostable (HW-04); toggled every loop pass |
 | `LED_COMMS`, `LED_FAULT`, `LED_HB` | GPIO output | comms (patterns in node.h), fault, heartbeat (1 Hz while the firmware runs). The green power LED is on the 3.3 V rail, no pin |
 | `CS_A`, `CS_IN`, `CS_B` | GPIO output, **initial level high** | chip selects: bank A (ISO2H823V2.5), inputs (ISO1I813T), bank B (ISO808A-1) |
-| `DIP1`..`DIP4` | GPIO input, pull-up | switch ON connects to 0 V; DIP1 = address bit 0 |
+| `FRAM_WP` | GPIO output, **initial level high**, push-pull | address F-RAM write protect (high = protected; also pulled up on the board) |
 | `HWREV0`, `HWREV1` | GPIO input, pull-up | straps to 0 V; HW_REV = 1 + value |
 | `B_FAULT` | GPIO input, no pull | ISO808A-1 FAULT: open drain, pulled up on the board, active low |
 | `B_PGOOD` | GPIO input, no pull | ISO808A-1 PGOOD: open drain, pulled up on the board, low = field supply B not good |
@@ -39,6 +39,10 @@ outputs off before this code runs, HW-05). Inputs as listed.
 - **SPI1**: Full-Duplex Master, 8 bits, MSB first, NSS software, CPOL low, CPHA 1 edge (SPI mode
   0, all three chips), prescaler /16 = 4 MHz (the ISO1I813T allows 5 MHz, the ISO2H823V2.5 6 MHz,
   the ISO808A-1 20 MHz).
+- **I2C2**: I2C, Standard mode 100 kHz, 7-bit addressing, no interrupts or DMA (`board_g0.c`
+  drives it at register level and uses the TIMINGR value CubeMX computes). Its SCL and SDA pins go
+  to the address F-RAM (MB85RC04V or FM24CL04B, A2 and A1 to 0 V, 7-bit address 0x50), pulled up
+  on the board. (Another I2C works: define `NODE_I2C` in main.h.)
 - **USART1**: Asynchronous, **Hardware Flow Control (RS485)** (its DE pin becomes an alternate
   function), 115200, 8 bits, none, 1 stop, FIFO mode **disabled**, Advanced: nothing else.
   RX pin **pull-up** (the transceiver's RO is off while the node transmits).
@@ -108,6 +112,7 @@ int main(void)
   SystemClock_Config();
   MX_GPIO_Init();
   MX_SPI1_Init();
+  MX_I2C2_Init();
   MX_USART1_UART_Init();
   MX_USB_Device_Init();
   /* USER CODE BEGIN 2 */

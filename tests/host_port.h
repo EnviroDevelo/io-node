@@ -8,6 +8,11 @@ typedef struct {
     uint8_t  relays;
     bool     b_fault, b_supply;
     uint32_t spi_calls, delay_us;
+    /* the address F-RAM (the 256 bytes used) */
+    uint8_t  fram[256];
+    bool     fram_absent;          /* does not answer */
+    int      fram_cut;             /* >0: the next write stops after fram_cut - 1 bytes (a power cut) */
+    uint32_t fram_writes;
 } host_port_t;
 extern host_port_t hp;
 

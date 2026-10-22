@@ -81,7 +81,7 @@ void test_diff(void)
     sim_hw_t hw;
     iob_node_init(&ref, ADDR);
     sim_hw_init(&hw);
-    node_boot_t b = { ADDR, 1, NODE_RST_POWER_ON, 0, { 0 } };
+    node_boot_t b = { .address = ADDR, .nv_ok = true, .hw_rev = 1, .reset_cause = NODE_RST_POWER_ON };
     for (int i = 0; i < 6; i++) b.uid[i] = ref.uid[i];
     uint32_t now = 0;
     node_init(&me, &hw.hw, &b, now);

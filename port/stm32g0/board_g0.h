@@ -1,5 +1,5 @@
 /* board_g0.h - the I/O board's controller functions outside the RS-485 port and the chips:
- * DIP switch, board revision straps, unique ID, reset cause, watchdog, HEALTHY, LEDs, USB VBUS,
+ * address F-RAM (I2C), board revision straps, unique ID, reset cause, watchdog, HEALTHY, LEDs, USB VBUS,
  * and entering ST's USB bootloader. STM32G0B1CET6, register level plus the CubeMX pin labels. */
 #ifndef BOARD_G0_H
 #define BOARD_G0_H
@@ -11,7 +11,7 @@
  * run asked for it (FW-57), with the independent watchdog still stopped after that reset. */
 void board_early_boot_check(void);
 
-void board_boot_info(node_boot_t *b);       /* DIP, straps, UID, reset cause, reset count (FW-02, FW-03) */
+void board_boot_info(node_boot_t *b);       /* address (F-RAM), straps, UID, reset cause, reset count (FW-02, FW-03, FW-60) */
 void board_iwdg_start(void);                /* about 100 ms (FW-23) */
 void board_iwdg_refresh(void);
 void board_healthy_toggle(void);            /* FW-22: main loop only */

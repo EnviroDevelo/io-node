@@ -21,4 +21,10 @@ void port_relays(uint8_t relays);
 
 void port_delay_us(uint32_t us);
 
+/* I2C F-RAM (MB85RC04V / FM24CL04B, first 256 bytes used) holding the node's address (nvcfg.h).
+ * A write releases the write-protect pin for its own length only; F-RAM has no write cycle, so it
+ * is done when the transfer is. 0, or <0: no answer. */
+int  port_fram_read(uint8_t offset, uint8_t *buf, uint8_t n);
+int  port_fram_write(uint8_t offset, const uint8_t *buf, uint8_t n);
+
 #endif

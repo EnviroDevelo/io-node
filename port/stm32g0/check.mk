@@ -14,7 +14,7 @@ CFLAGS  = -mcpu=cortex-m0plus -mthumb -std=c11 -O2 -g -Wall -Wextra -Wshadow -Wc
 INC     = -Iport/stm32g0/check -Iport/stm32g0 -Inode -Idrivers -I$(PLAT)/platform/include \
           -I$(HAL)/Inc -I$(EXT)/cmsis_device_g0/Include -I$(EXT)/cmsis-core/CMSIS/Core/Include
 SRCS    = node/node.c $(PLAT)/platform/core/mb_rtu.c drivers/drivers.c drivers/drv_iso2h823.c drivers/drv_iso1i813t.c \
-          drivers/drv_iso808.c drivers/isoface_crc5.c port/stm32g0/node_main.c port/stm32g0/board_g0.c port/stm32g0/rs485_g0.c \
+          drivers/drv_iso808.c drivers/isoface_crc5.c drivers/nvcfg.c port/stm32g0/node_main.c port/stm32g0/board_g0.c port/stm32g0/rs485_g0.c \
           port/stm32g0/usb_g0.c port/stm32g0/check/check_main.c
 HALSRC  = $(EXT)/cmsis_device_g0/Source/Templates/system_stm32g0xx.c \
           $(addprefix $(HAL)/Src/stm32g0xx_hal, .c _cortex.c _rcc.c _rcc_ex.c _gpio.c _pwr.c _pwr_ex.c _flash.c _flash_ex.c _dma.c _dma_ex.c _exti.c)

@@ -33,7 +33,7 @@
  *   - heartbeat: 1 Hz, 50 %, whenever the firmware runs (nothing else);
  *   - comms: one short flash every 0.5 s while the link is up; a double flash every second
  *     while it is up but a loss is still latched; fast 4 Hz while it is down; off before the
- *     master's first request; steady on with DIP address 0 (no address, never answers: FW-02).
+ *     master's first request; steady on while the address is not set (0: never answers, FW-02).
  *
  * Inputs (FW-33): every change of an input is reported at least once to the RS-485 master, so
  * an alarm contact that opens for less than the master's poll period is not missed. A read of
@@ -43,12 +43,17 @@
  * works the same with or without a master on the bus.
  *
  * Ports (FW-56, FW-57): requests arrive on the RS-485 bus or on the USB virtual COM port.
- *   - RS-485 answers at the DIP address only (1..15); DIP 0 means never answer.
- *   - USB answers at the DIP address or at 247 (NODE_USB_ADDRESS).
+ *   - RS-485 answers at the node's address only (1..247, kept in the board's F-RAM: FW-60);
+ *     0 means not set: never answer.
+ *   - USB answers at the node's address or at 247 (NODE_USB_ADDRESS).
  *   - Over USB, writes to registers 0-2 are refused (exception 04) while the RS-485 master is in
  *     control, that is within the hold time of its last valid write of register 0.
  *   - Register 37 (BOOTLOADER) is writable over USB only, value 0xB007; over RS-485 it is
- *     exception 02 like any read-only register. */
+ *     exception 02 like any read-only register.
+ *   - Register 38 (NODE_ADDRESS) is writable over USB only, 0..247, and not while the RS-485
+ *     master is in control (04). The new address is saved to the F-RAM and read back before
+ *     the reply; if that fails the reply is exception 04 and nothing changes. It takes effect
+ *     at once. */
 #ifndef NODE_H
 #define NODE_H
 #include <stdbool.h>
@@ -85,7 +90,8 @@ typedef enum {                      /* reset cause, from the port's RCC flags */
 } node_reset_t;
 
 typedef struct {
-    uint8_t      dip_address;       /* 0..15 from the DIP switch (FW-02) */
+    uint8_t      address;           /* 0..247 from the board's F-RAM, 0 = not set (FW-02, FW-60) */
+    bool         nv_ok;             /* the F-RAM answered (else address 0 and the fault LED on) */
     uint8_t      hw_rev;            /* from the straps (HW-11) */
     node_reset_t reset_cause;
     uint16_t     resets;            /* resets other than power-on since power-on (kept by the port in .noinit) */
@@ -106,7 +112,8 @@ typedef struct {
     uint16_t out_cmd, relay_cmd, seq, echo;
     uint16_t hold_ds, filter_ms, wb_en, ol_en;
     /* state */
-    uint8_t  address;               /* DIP address; 0 = invalid, never answers on RS-485 */
+    uint8_t  address;               /* from the F-RAM; 0 = not set, never answers on RS-485 */
+    bool     nv_fault;              /* the address F-RAM did not answer at start-up */
     bool     config_needed, timeout_latched, wdg_latched;
     bool     gate;                  /* outputs follow the commands (FW-21) */
     bool     master_seen;           /* a valid RS-485 write of register 0 since start */
