@@ -6,6 +6,7 @@
 #   make master-test  the platform's whole host test suite, with every simulated I/O board
 #                     replaced by this node firmware (tests/platform/iob_node_real.c)
 #   make target       compile-check the STM32G0B1 build with arm-none-eabi-gcc (port/stm32g0/check.mk)
+#   make bench        compile-check the NUCLEO-H563ZI bench board build (port/nucleo_h563/check.mk)
 PLAT   ?= ../cems-platform
 CC     ?= gcc
 CFLAGS ?= -std=c11 -O1 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -Werror \
@@ -18,7 +19,7 @@ TEST_SRC = tests/test_main.c tests/test_node.c tests/test_diff.c tests/test_drv.
 DRV_SRC  = $(wildcard drivers/*.c)
 HDRS     = $(wildcard node/*.h drivers/*.h tests/*.h port/stm32g0/node_port.h) $(PLAT)/platform/include/iobus.h $(PLAT)/platform/include/mb_rtu.h
 
-.PHONY: test master-test target vnode clean
+.PHONY: test master-test target bench vnode clean
 test: $(BUILD)/node_tests
 	./$(BUILD)/node_tests
 
@@ -49,6 +50,9 @@ $(BUILD)/vnode: tests/vnode.c $(NODE_SRC) tests/sim_hw.c $(HDRS)
 
 target:
 	$(MAKE) -f port/stm32g0/check.mk PLAT=$(PLAT)
+
+bench:
+	$(MAKE) -f port/nucleo_h563/check.mk PLAT=$(PLAT)
 
 clean:
 	rm -rf $(BUILD)

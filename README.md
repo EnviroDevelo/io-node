@@ -19,6 +19,7 @@ reference this firmware is compared against byte for byte.
 | `node/node_hw.h` | What the core needs from the board: the three chips, bank B's status pins and the relays. |
 | `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
 | `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, address F-RAM (I2C), straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
+| `port/nucleo_h563/` | A NUCLEO-H563ZI as a bench stand-in for the board: the same node core on GPIO pins, RS-485 through a transceiver module, the ST-LINK port as the USB port (`CUBEMX_SETUP.md` there). Not the product |
 | `tools/at02.py` | AT-02 conformance test for a real board, from a PC (below). |
 | `tools/at13.py` | AT-13 digital input bench test, from a PC (below). |
 | `tools/set_address.py` | Read or set a board's address over its USB-C port (FW-60, below). |
@@ -31,6 +32,7 @@ reference this firmware is compared against byte for byte.
 make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, the chip drivers against frame-level chip models
 make master-test   # the platform's whole host suite with every simulated I/O board replaced by this firmware
 make target        # arm-none-eabi-gcc: compile and link for the STM32G0B1 against ST's HAL headers
+make bench         # the NUCLEO-H563ZI bench board build, compile and link (port/nucleo_h563)
 make vnode         # a virtual board on a pseudo-terminal, for trying tools/at02.py and at13.py (Linux/macOS)
 ```
 
