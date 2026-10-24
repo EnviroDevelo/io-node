@@ -1,6 +1,8 @@
 /* board_nucleo.h - a NUCLEO-H563ZI as a bench stand-in for the I/O board (not the product: that is
  * the STM32G0B1 in port/stm32g0). The node core (node/node.c), the register map and the Modbus
  * slave are the product's own; only the board underneath differs:
+ *   - Ethernet: the Nucleo's own LAN8742A, lwIP without an OS (net_bench.c, lwip/eth_h5.c); the IP
+ *     settings in backup registers BKP6R..BKP10R, like the address
  *   - RS-485: one USART in RS-485 mode (DE from the USART) to a 3.3 V transceiver module,
  *     the same receiver-timeout code as the product (port/stm32g0/rs485_g0.c)
  *   - the "USB-C port" (FW-56: address 247, set_address.py, at02.py --usb) is the ST-LINK virtual
