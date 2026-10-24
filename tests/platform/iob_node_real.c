@@ -11,9 +11,10 @@
 #include "iob_node_sim.h"
 #include "mb_rtu.h"
 #include "node.h"
+#include "node_net.h"
 #include "sim_hw.h"
 
-typedef struct { iob_node_t *key; node_t me; sim_hw_t hw; } shadow_t;
+typedef struct { iob_node_t *key; node_t me; sim_hw_t hw; node_net_t net; } shadow_t;
 static shadow_t sh[16];
 
 static shadow_t *find(const iob_node_t *n)
@@ -46,6 +47,8 @@ static void push(iob_node_t *n, shadow_t *s)
     m->n_out_a = n->n_out_a; m->n_out_b = n->n_out_b; m->n_relays = n->n_relays; m->n_inputs = n->n_inputs;
     m->fw_version = n->fw_version; m->hw_rev = n->hw_rev; m->fw_build = 1;
     memcpy(m->uid, n->uid, sizeof m->uid);
+    s->net.cfg = (node_ipcfg_t){ n->ip, n->mask, n->gw, n->master_ip };
+    memcpy(s->net.mac, n->mac, 6);
 }
 
 /* the node's registers and state -> the fields the tests read */
@@ -62,7 +65,10 @@ static void pull(iob_node_t *n, const shadow_t *s)
     n->address = m->address;                         /* an address change may have moved it */
     n->rx_errors = m->rx_errors; n->resets = m->resets;
     n->frames = m->frames; n->replies = m->replies; n->writes0 = m->writes0;
+    n->ip = s->net.cfg.ip; n->mask = s->net.cfg.mask; n->gw = s->net.cfg.gw; n->master_ip = s->net.cfg.master_ip;
 }
+
+static int net_store(void *ctx, const node_ipcfg_t *c) { (void)ctx; (void)c; return NODE_HW_OK; }
 
 /* a power-up or a restart of the board: the chips settle as the world says */
 static void boot(iob_node_t *n, shadow_t *s, node_reset_t cause, uint16_t resets, uint32_t now)
@@ -72,6 +78,7 @@ static void boot(iob_node_t *n, shadow_t *s, node_reset_t cause, uint16_t resets
     memcpy(b.uid, n->uid, sizeof b.uid);
     push(n, s);
     node_init(&s->me, &s->hw.hw, &b, now);
+    node_net_init(&s->net, &s->me, NULL, n->mac, net_store, NULL);
     push(n, s);
     node_poll(&s->me, now + 1u);
     node_poll(&s->me, now + 2u);                     /* the bank B fault pin's 1 ms debounce */
@@ -87,6 +94,8 @@ void iob_node_init(iob_node_t *n, uint8_t address)
     n->fw_version = 0x0100; n->hw_rev = 1;
     for (unsigned i = 0; i < 6; ++i) n->uid[i] = (uint16_t)(0x1000u * address + i);
     n->field_a = n->field_b = true;
+    if (address >= 1 && address <= 3) { n->ip = 0xC0A8013Cu + address; n->mask = 0xFFFFFF00u; }
+    iob_mac_from_uid(n->uid, n->mac);
     shadow_t *s = find(n);
     boot(n, s, NODE_RST_POWER_ON, 0, 0);
     pull(n, s);
@@ -155,4 +164,77 @@ void iob_simbus_init(iob_simbus_t *b)
 void iob_simbus_add(iob_simbus_t *b, iob_node_t *n)
 {
     if (b->n < 4) b->nodes[b->n++] = n;
+}
+
+/* ---------------- the network (as in iob_node_sim.c), through the node's own node_net.c ---------------- */
+static uint16_t net_xfer(iob_port_t *p, const uint8_t *tx, uint16_t n, uint8_t *rx, uint16_t cap, uint32_t timeout)
+{
+    (void)timeout;
+    iob_simnet_t *s = (iob_simnet_t *)p->ctx;
+    s->requests++;
+    uint32_t now = s->now ? s->now() : bsp_ms();
+    uint8_t m[IOB_MBAP_MAX], rep[2u * IOB_MBAP_MAX], out[IOB_MBAP_MAX];
+    size_t ml = iob_mbap_from_rtu(tx, n, (uint16_t)s->requests, m);
+    if (!ml) return 0;
+    for (unsigned i = 0; i < s->n; ++i) {
+        iob_node_t *nd = s->nodes[i];
+        if (!nd->powered || nd->ip == 0 || nd->ip != s->target_ip) continue;
+        shadow_t *x = find(nd);
+        push(nd, x);
+        node_poll(&x->me, now);
+        int r = node_net_accept(&x->net, s->master_ip) ? node_net_tcp(&x->net, now, m, (uint16_t)ml, rep, sizeof rep) : -1;
+        pull(nd, x);
+        if (r <= 0 || s->drop_next) { if (s->drop_next) s->drop_next--; return 0; }
+        size_t ol = iob_rtu_from_mbap(rep, (size_t)r, NULL, out);
+        if (!ol || ol > cap) return 0;
+        memcpy(rx, out, ol);
+        return (uint16_t)ol;
+    }
+    return 0;
+}
+
+static void net_target(iob_port_t *p, uint32_t ip) { ((iob_simnet_t *)p->ctx)->target_ip = ip; }
+
+static bool net_send(iob_dgram_t *d, const uint8_t *buf, uint16_t len)
+{
+    iob_simnet_t *s = (iob_simnet_t *)d->ctx;
+    s->datagrams++;
+    s->qn = s->qi = 0;
+    uint32_t now = s->now ? s->now() : bsp_ms();
+    for (unsigned i = 0; i < s->n && s->qn < 8; ++i) {
+        iob_node_t *nd = s->nodes[i];
+        if (!nd->powered) continue;
+        shadow_t *x = find(nd);
+        push(nd, x);
+        bool changed;
+        if (node_net_disc(&x->net, now, buf, len, s->master_ip, s->q[s->qn], &changed)) s->qn++;
+        pull(nd, x);
+    }
+    return true;
+}
+
+static uint16_t net_recv(iob_dgram_t *d, uint8_t *buf, uint16_t cap, uint32_t timeout)
+{
+    (void)timeout;
+    iob_simnet_t *s = (iob_simnet_t *)d->ctx;
+    if (s->qi >= s->qn || cap < IOB_DISC_LEN) return 0;
+    memcpy(buf, s->q[s->qi++], IOB_DISC_LEN);
+    return IOB_DISC_LEN;
+}
+
+void iob_simnet_init(iob_simnet_t *s, uint32_t master_ip)
+{
+    memset(s, 0, sizeof *s);
+    s->port.xfer = net_xfer;
+    s->port.target = net_target;
+    s->port.ctx = s;
+    s->disc.send = net_send;
+    s->disc.recv = net_recv;
+    s->disc.ctx = s;
+    s->master_ip = master_ip;
+}
+
+void iob_simnet_add(iob_simnet_t *s, iob_node_t *n)
+{
+    if (s->n < 4) s->nodes[s->n++] = n;
 }

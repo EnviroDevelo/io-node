@@ -11,5 +11,6 @@ extern int t_checks, t_fails;
 void test_node(void);
 void test_diff(void);
 void test_drv(void);
+void test_net(void);
 
 #endif
