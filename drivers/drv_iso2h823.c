@@ -49,7 +49,7 @@
 #define INTERR_W4P      0x02u
 #define INTERR_OTP      0x10u
 #define GLCFG_OLOFF     0x02u
-#define GLCFG_LEDGOFF   0x04u
+#define GLCFG_LEDGOFF   0x04u   /* never set: the board's per-channel LEDs are the chip's LED matrix (Gary, 24 Oct) */
 #define DIAG_OT   0x01u
 #define DIAG_OLI  0x02u
 #define DIAG_OLA  0x04u
@@ -90,11 +90,12 @@ static int wr(uint8_t reg, uint8_t v)
 
 /* FW-04: configure and read back. OL checks: the chip's OLOFF switches open-load detection off for
  * all channels, used when no channel has its check on; per channel the node masks A_OPEN itself
- * (DIAGCFG would switch off every diagnostic of a channel, overload included, so it stays FFh). */
+ * (DIAGCFG would switch off every diagnostic of a channel, overload included, so it stays FFh).
+ * LEDGOFF stays clear: the board drives its bank A channel LEDs from the chip's 3x3 LED matrix. */
 int iso2h823_config(void *ctx, uint8_t ol_enable)
 {
     (void)ctx;
-    uint8_t v, glcfg = (uint8_t)(GLCFG_LEDGOFF | (ol_enable ? 0u : GLCFG_OLOFF));
+    uint8_t v, glcfg = (uint8_t)(ol_enable ? 0u : GLCFG_OLOFF);
     if (rd(R_GLERR, &v)) return NODE_HW_NO_ANSWER;              /* also clears UV/MV after power-up */
     if ((v & GLERR_VERS_MASK) != GLERR_VERS) return NODE_HW_READBACK;
     if (rd(R_INTERR, &v)) return NODE_HW_NO_ANSWER;             /* clears TE/W4P/ALLOFF from power-up */

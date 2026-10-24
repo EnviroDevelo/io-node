@@ -133,7 +133,7 @@ Each driver's header comment cites the datasheet sections it follows.
 
 | Chip | Datasheet | Driver | What it does |
 |---|---|---|---|
-| ISO2H823V2.5 (bank A) | Rev 2.1, 2024-11-01 | `drv_iso2h823.c` | SPI mode 3 of the chip: 24-bit frames with CRC-5 both ways. Config: version check (GLERR 0100b), power-up flags read away, DIAGCFG FFh, GLCFG LEDGOFF (+OLOFF if no channel is checked), all read back. DRIVE written every 1 ms pass. Every 5 ms: COLDIAG, then DIAGx of flagged channels, GLERR, INTERR. |
+| ISO2H823V2.5 (bank A) | Rev 2.1, 2024-11-01 | `drv_iso2h823.c` | SPI mode 3 of the chip: 24-bit frames with CRC-5 both ways. Config: version check (GLERR 0100b), power-up flags read away, DIAGCFG FFh, GLCFG 0 (LEDGOFF clear: the board's per-channel LEDs are the chip's LED matrix; OLOFF if no channel is checked), all read back. DRIVE written every 1 ms pass. Every 5 ms: COLDIAG, then DIAGx of flagged channels, GLERR, INTERR. |
 | ISO1I813T (inputs) | V2.2, 2017-01-03 | `drv_iso1i813t.c` | SPI mode 3 of the chip, same frame and CRC. Config: 8 COEFIL registers (filter + wire-break mask), read back. Every 2 ms: DIAG (the reply also carries the inputs and UV), INTERR. |
 | ISO808A-1 (bank B) | DS14170 Rev 6, July 2025 | `drv_iso808.c` | One 8-bit frame of output states every 1 ms pass, SS high 20 us after it. FAULT and PGOOD pins. Nothing to service: the chip's watchdog is internal. |
 
