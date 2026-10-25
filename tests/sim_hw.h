@@ -28,9 +28,18 @@ typedef struct {
     uint8_t  stored_serial[16];
     int      serial_store_rc;
     uint32_t serial_stores;
+    /* map 2: the temperature front end reports temp as set here; the pump */
+    node_temp_t     temp;
+    node_temp_cfg_t temp_cfg;
+    uint32_t temp_configs, temp_polls;
+    uint16_t pwm_duty, pwm_hz;
+    bool     pwm_dir;
+    uint32_t tach_us;
     node_hw_t hw;
 } sim_hw_t;
 
-void sim_hw_init(sim_hw_t *s);
+void sim_hw_init(sim_hw_t *s);           /* with the temperature inputs and the pump (H563 board) */
+void sim_hw_map1(sim_hw_t *s);           /* without them (G0 board): before node_init */
+void sim_hw_map2(sim_hw_t *s);           /* with them again */
 
 #endif

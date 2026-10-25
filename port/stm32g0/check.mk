@@ -10,7 +10,7 @@ ARMCC  ?= $(EXT)/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin/arm-none-eabi-gcc
 HAL     = $(EXT)/stm32g0xx_hal_driver
 DEV     = -DSTM32G0B1xx -DUSE_HAL_DRIVER
 CFLAGS  = -mcpu=cortex-m0plus -mthumb -std=c11 -O2 -g -Wall -Wextra -Wshadow -Wconversion -Wno-sign-conversion \
-          -Werror -ffunction-sections -fdata-sections $(EXTRA)
+          -Werror -ffunction-sections -fdata-sections -DNODE_TEMP_PWM=0 $(EXTRA)
 INC     = -Iport/stm32g0/check -Iport/stm32g0 -Inode -Idrivers -I$(PLAT)/platform/include \
           -I$(HAL)/Inc -I$(EXT)/cmsis_device_g0/Include -I$(EXT)/cmsis-core/CMSIS/Core/Include
 SRCS    = node/node.c $(PLAT)/platform/core/mb_rtu.c drivers/drivers.c drivers/drv_iso2h823.c drivers/drv_iso1i813t.c \

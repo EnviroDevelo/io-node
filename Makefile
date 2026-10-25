@@ -15,7 +15,7 @@ INC     = -Inode -Idrivers -Iport/stm32g0 -Itests -I$(PLAT)/platform/include -I$
 BUILD   = build
 
 NODE_SRC = node/node.c node/node_net.c $(PLAT)/platform/core/mb_rtu.c $(PLAT)/platform/core/iob_net.c
-TEST_SRC = tests/test_main.c tests/test_node.c tests/test_net.c tests/test_diff.c tests/test_drv.c tests/sim_hw.c tests/host_port.c tests/sim_chips.c $(PLAT)/platform/bsp/iob_node_sim.c
+TEST_SRC = tests/test_main.c tests/test_node.c tests/test_net.c tests/test_diff.c tests/test_drv.c tests/sim_hw.c tests/host_port.c tests/sim_chips.c tests/sim_ads124s08.c tests/test_temp.c $(PLAT)/platform/bsp/iob_node_sim.c
 DRV_SRC  = $(wildcard drivers/*.c)
 HDRS     = $(wildcard node/*.h drivers/*.h tests/*.h port/stm32g0/node_port.h) $(PLAT)/platform/include/iobus.h $(PLAT)/platform/include/iob_net.h $(PLAT)/platform/include/mb_rtu.h
 
@@ -25,7 +25,7 @@ test: $(BUILD)/node_tests
 
 $(BUILD)/node_tests: $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) $(HDRS)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -DPLAT_HOST $(INC) $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) -o $@ -lm
+	$(CC) $(CFLAGS) -DPLAT_HOST -DADS124S08_CONFIRMED=1 $(INC) $(NODE_SRC) $(DRV_SRC) $(TEST_SRC) -o $@ -lm
 
 # ---- the platform's tests with the real node in place of iob_node_sim.c ----
 # The platform's own Makefile builds its test binary, with its source list (CORE) read back from

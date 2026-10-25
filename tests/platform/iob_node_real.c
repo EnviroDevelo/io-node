@@ -40,11 +40,17 @@ static void push(iob_node_t *n, shadow_t *s)
     h->b_wdg_tripped = (n->b_fault & IOB_BF_WDG) != 0;
     h->in_internal_fault = n->in_chip_fault;
     h->a_internal_fault = n->out_a_chip_fault;
+    if (n->n_temp_pwm) sim_hw_map2(h); else sim_hw_map1(h);
+    for (unsigned i = 0; i < IOB_TEMPS; i++) { h->temp.t[i] = n->temp[i]; h->temp.st[i] = n->temp_st[i]; }
+    h->temp.cj = n->cj; h->temp.flags = n->temp_flags; h->temp.count = n->temp_count;
+    uint32_t ppr = s->me.tach_ppr ? s->me.tach_ppr : 2u;
+    h->tach_us = n->tach_rpm ? (60000000u + n->tach_rpm * ppr / 2u) / (n->tach_rpm * ppr) : 0u;
     node_t *m = &s->me;
     m->address = n->address;
     memcpy(m->serial, n->serial, sizeof m->serial);
     m->magic = n->magic; m->map_version = n->map_version;
     m->n_out_a = n->n_out_a; m->n_out_b = n->n_out_b; m->n_relays = n->n_relays; m->n_inputs = n->n_inputs;
+    m->n_temp_pwm = n->n_temp_pwm;
     m->fw_version = n->fw_version; m->hw_rev = n->hw_rev; m->fw_build = 1;
     memcpy(m->uid, n->uid, sizeof m->uid);
     s->net.cfg = (node_ipcfg_t){ n->ip, n->mask, n->gw, n->master_ip };
@@ -57,6 +63,10 @@ static void pull(iob_node_t *n, const shadow_t *s)
     const node_t *m = &s->me;
     n->out_cmd = m->out_cmd; n->relay_cmd = m->relay_cmd; n->seq = m->seq; n->echo = m->echo;
     n->hold_ds = m->hold_ds; n->filter_ms = m->filter_ms; n->wb_en = m->wb_en; n->ol_en = m->ol_en;
+    n->pwm_cmd = m->pwm_cmd; n->pwm_dir = m->pwm_dir; n->pwm_hz = m->pwm_hz; n->tach_ppr = m->tach_ppr;
+    for (unsigned k = 0; k < IOB_TEMP_CONNS; k++) {
+        n->temp_type[k] = m->temp_cfg.type[k]; n->ntc_r25[k] = m->temp_cfg.ntc_r25[k]; n->ntc_beta[k] = m->temp_cfg.ntc_beta[k];
+    }
     n->config_needed = m->config_needed; n->timeout_latched = m->timeout_latched; n->wdg_latched = m->wdg_latched;
     n->gate = node_healthy(m);
     n->last_write_ms = m->last_write_ms;
@@ -91,6 +101,9 @@ void iob_node_init(iob_node_t *n, uint8_t address)
     n->powered = true;
     n->magic = IOB_MAGIC; n->map_version = IOB_MAP_VERSION;
     n->n_out_a = 8; n->n_out_b = 8; n->n_relays = 2; n->n_inputs = 8;
+    n->n_temp_pwm = IOB_TEMPS | 1u << 8;
+    for (unsigned i = 0; i < IOB_TEMPS; ++i) { n->temp[i] = IOB_TEMP_INVALID; n->temp_st[i] = IOB_TS_OFF; }
+    n->cj = IOB_TEMP_INVALID;
     n->fw_version = 0x0100; n->hw_rev = 1;
     for (unsigned i = 0; i < 6; ++i) n->uid[i] = (uint16_t)(0x1000u * address + i);
     n->field_a = n->field_b = true;

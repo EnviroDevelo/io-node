@@ -13,6 +13,12 @@ static const node_hw_t board = {
     board_relays,
     nvcfg_store_address,
     nvcfg_store_serial,
+#if NODE_TEMP_PWM
+    ads124s08_config, ads124s08_poll,
+    pump_pwm, pump_tach_period_us,
+#else
+    0, 0, 0, 0,                         /* the G0 board has neither: map 2 registers refused */
+#endif
 };
 
 const node_hw_t *drivers_hw(void) { return &board; }

@@ -1,6 +1,7 @@
 /* sim_hw.c - see sim_hw.h */
 #include "sim_hw.h"
 #include <string.h>
+#include "iobus.h"
 
 static int a_config(void *ctx, uint8_t ol)
 {
@@ -74,10 +75,28 @@ static int serial_store(void *ctx, const uint8_t sn[16])
     return s->serial_store_rc;
 }
 
+static void temp_config(void *ctx, const node_temp_cfg_t *c) { sim_hw_t *s = ctx; s->temp_configs++; s->temp_cfg = *c; }
+static void temp_poll(void *ctx, uint32_t now, node_temp_t *t) { sim_hw_t *s = ctx; (void)now; s->temp_polls++; *t = s->temp; }
+static void pwm(void *ctx, uint16_t d, uint16_t hz, bool dir) { sim_hw_t *s = ctx; s->pwm_duty = d; s->pwm_hz = hz; s->pwm_dir = dir; }
+static uint32_t tach(void *ctx) { return ((sim_hw_t *)ctx)->tach_us; }
+
+void sim_hw_map1(sim_hw_t *s)
+{
+    s->hw.temp_config = 0; s->hw.temp_poll = 0; s->hw.pwm = 0; s->hw.tach_period_us = 0;
+}
+
+void sim_hw_map2(sim_hw_t *s)
+{
+    s->hw.temp_config = temp_config; s->hw.temp_poll = temp_poll; s->hw.pwm = pwm; s->hw.tach_period_us = tach;
+}
+
 void sim_hw_init(sim_hw_t *s)
 {
     memset(s, 0, sizeof *s);
     s->field_a = s->field_b = true;
     s->hw = (node_hw_t){ s, a_config, a_write, a_diag, in_config, in_read,
-                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays, addr_store, serial_store };
+                         b_write, b_fault_pin, b_wdg_tripped, b_wdg_service, b_supply_ok, relays, addr_store, serial_store,
+                         temp_config, temp_poll, pwm, tach };
+    for (unsigned k = 0; k < IOB_TEMPS; k++) { s->temp.t[k] = IOB_TEMP_INVALID; s->temp.st[k] = IOB_TS_OFF; }
+    s->temp.cj = IOB_TEMP_INVALID;
 }

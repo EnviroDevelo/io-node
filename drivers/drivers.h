@@ -3,8 +3,10 @@
  *   drv_iso2h823.c  bank A, Infineon ISO2H823V2.5, SPI (24-bit frames with CRC-5)   - checked against its datasheet
  *   drv_iso1i813t.c inputs, Infineon ISO1I813T, SPI (24-bit frames with CRC-5)        - checked against its datasheet
  *   drv_iso808.c    bank B, ST ISO808A-1, SPI (8-bit frames), FAULT and PGOOD pins - checked against its datasheet
- * All three share the node's SPI bus, each with its own chip select, SPI mode 0, at most 5 MHz
- * (the ISO1I813T's limit; the ISO2H823 allows 6, the ISO808A-1 20).
+ *   drv_ads124s08.c temperature inputs, TI ADS124S08 behind an isolator, SPI mode 1   - NOT yet checked (see the file)
+ *   pump.c          pump PWM and tacho (map 2), through node_port.h
+ * The three I/O chips share the node's SPI bus, each with its own chip select, SPI mode 0, at most 5 MHz
+ * (the ISO1I813T's limit; the ISO2H823 allows 6, the ISO808A-1 20); the ADS124S08 runs at mode 1, 4 MHz.
  *
  * DATASHEET STATUS. A driver whose register-level details have not been checked against the
  * chip's datasheet is built in its fail-safe form: it reports "no answer" and drives nothing, so
@@ -26,7 +28,15 @@
 #define ISO808_CONFIRMED 1        /* ISO808A-1 datasheet DS14170 Rev 6, July 2025 */
 #endif
 
-#if defined(NODE_PRODUCT_BUILD) && !(ISO2H823_CONFIRMED && ISO1I813T_CONFIRMED && ISO808_CONFIRMED)
+#ifndef ADS124S08_CONFIRMED
+#define ADS124S08_CONFIRMED 0     /* register layout cross-checked (Zephyr driver); SYS, CRC and sensor constants not yet */
+#endif
+#ifndef NODE_TEMP_PWM
+#define NODE_TEMP_PWM 1           /* the H563 board rev A has the temperature inputs and the pump PWM */
+#endif
+
+#if defined(NODE_PRODUCT_BUILD) && !(ISO2H823_CONFIRMED && ISO1I813T_CONFIRMED && ISO808_CONFIRMED && \
+                                     (ADS124S08_CONFIRMED || !NODE_TEMP_PWM))
 #error "A chip driver is not yet checked against its datasheet (drivers/drivers.h): not a product build"
 #endif
 
@@ -47,5 +57,11 @@ bool iso808_wdg_tripped(void *ctx);
 void iso808_wdg_service(void *ctx);
 bool iso808_supply_ok(void *ctx);
 void board_relays(void *ctx, uint8_t relays);
+void ads124s08_config(void *ctx, const node_temp_cfg_t *c);
+void ads124s08_poll(void *ctx, uint32_t now_ms, node_temp_t *t);
+void ads124s08_reset_state(void);                      /* host tests: forget everything (power-up) */
+uint8_t ads124s08_crc8(const uint8_t *d, unsigned n);  /* the data CRC: x^8 + x^2 + x + 1, seed 0xFF */
+void pump_pwm(void *ctx, uint16_t duty, uint16_t freq_hz, bool dir);
+uint32_t pump_tach_period_us(void *ctx);
 
 #endif

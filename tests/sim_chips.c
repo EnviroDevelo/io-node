@@ -2,6 +2,7 @@
  * 3.2.2.3 CRC, 3.2.4 sticky diagnostics (COLDIAG read loads DIAG0..7), 5.1 registers and reset
  * values (GLERR 46h, INTERR 07h, DIAGCFG FFh). ISO808A-1 per DS14170: 8-bit frame, mode 0. */
 #include "sim_chips.h"
+#include "sim_ads124s08.h"
 #include <string.h>
 #include "host_port.h"
 
@@ -154,6 +155,7 @@ static int spi(port_cs_t cs, uint8_t mode, const uint8_t *tx, uint8_t *rx, uint1
     case PORT_CS_BANK_A: return iso2h823_frame(mode, tx, rx, n);
     case PORT_CS_BANK_B: return iso808a_frame(mode, tx, rx, n);
     case PORT_CS_INPUTS: return iso1i813t_frame(mode, tx, rx, n);
+    case PORT_CS_TEMP: return sim_ads_frame(mode, tx, rx, n);
     default: memset(rx, 0xFF, n); return 0;
     }
 }
@@ -163,6 +165,7 @@ void sim_chips_reset(void)
     memset(&sa, 0, sizeof sa);
     memset(&sb, 0, sizeof sb);
     memset(&si, 0, sizeof si);
+    sim_ads_reset();
     memset(si.coefil, 0x1F, sizeof si.coefil);
     si.s_uv = si.s_w4s = si.s_te = true;          /* GLERR 06h, INTERR 06h after power-up */
     sa.version = 0x40u;

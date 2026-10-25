@@ -13,6 +13,13 @@ typedef struct {
     bool     fram_absent;          /* does not answer */
     int      fram_cut;             /* >0: the next write stops after fram_cut - 1 bytes (a power cut) */
     uint32_t fram_writes;
+    /* the temperature front end's supply pin and the pump */
+    bool     temp_supply_bad;      /* TEMP_EN_FLT reads low */
+    bool     temp_off;             /* the firmware pulls it low */
+    uint32_t temp_cycles;          /* power-cycles asked */
+    uint16_t pwm_duty, pwm_hz;
+    bool     pwm_dir;
+    uint32_t tach_us;
 } host_port_t;
 extern host_port_t hp;
 
