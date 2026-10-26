@@ -1,4 +1,4 @@
-/* node.h - the CEMS I/O board node firmware core: Modbus RTU slave, register map (map version 1)
+/* node.h - the CEMS I/O board node firmware core: Modbus RTU slave, register map (map version 2)
  * and safe state. Contract: "CEMS I/O Module Requirements: Firmware and Hardware" (FW-nn below);
  * register numbers and bits from the platform's iobus.h; CRC from the platform's mb_rtu.c.
  *
@@ -46,7 +46,7 @@
  *   - RS-485 answers at the node's address only (1..247, kept in the board's F-RAM: FW-60);
  *     0 means not set: never answer.
  *   - USB answers at the node's address or at 247 (NODE_USB_ADDRESS).
- *   - Over USB, writes to registers 0-2 are refused (exception 04) while the RS-485 master is in
+ *   - Over USB, writes to registers 0-4 are refused (exception 04) while the RS-485 master is in
  *     control, that is within the hold time of its last valid write of register 0.
  *   - Register 37 (BOOTLOADER) is writable over USB only, value 0xB007; over RS-485 it is
  *     exception 02 like any read-only register.
@@ -60,7 +60,15 @@
  *     address change only; every other write is exception 04, and it does not count as the link
  *     (FW-58).
  *   - The serial number (52..59, FW-62) is written over USB only and only until the board has been
- *     powered off once with it set. */
+ *     powered off once with it set.
+ *
+ * Map 2 (H563 board rev A), present when the board's node_hw_t has them (IOB_R_N_TEMP_PWM):
+ *   - pump PWM (3, 4): an output like the others. It follows PWM_CMD only while the gate is open, so
+ *     the hold time turns it off with everything else; the hardware gate cuts PWM1 too. Writing 3-4
+ *     does not restart the hold time (only register 0 does) and counts as a command for FW-56.
+ *     Tacho speed in 29, from the period and TACH_PPR.
+ *   - temperatures (80..92, 30, 31): measured by the board's front end in the background from the
+ *     sensor types in 96..104; every channel has an explicit state (IOB_TS_*), never a 0 for a fault. */
 #ifndef NODE_H
 #define NODE_H
 #include <stdbool.h>
@@ -68,7 +76,7 @@
 #include "iobus.h"
 #include "node_hw.h"
 
-#define NODE_REG_SPACE    80u     /* registers 0..79 */
+#define NODE_REG_SPACE   107u     /* registers 0..106 */
 #define NODE_FRAME_MAX   256u     /* FW-50: static 256-byte receive and transmit buffers */
 #define NODE_USB_ADDRESS 247u     /* FW-56: USB service address */
 
@@ -77,6 +85,10 @@
 #define NODE_DEF_FILTER     8u
 #define NODE_DEF_WB         0u
 #define NODE_DEF_OL      0xFFu
+#define NODE_DEF_NTC_R25 1000u    /* 10k */
+#define NODE_DEF_NTC_BETA 3435u
+#define NODE_DEF_PWM_HZ  1000u
+#define NODE_DEF_PPR        2u
 
 /* timing (FW-30, FW-40, FW-41, FW-04) */
 #define NODE_IN_PERIOD_MS     2u  /* input chip read (FW-30: at least every 5 ms) */
@@ -119,6 +131,11 @@ typedef struct {
     /* registers the master writes */
     uint16_t out_cmd, relay_cmd, seq, echo;
     uint16_t hold_ds, filter_ms, wb_en, ol_en;
+    uint16_t pwm_cmd, pwm_dir, pwm_hz, tach_ppr;    /* map 2 */
+    node_temp_cfg_t temp_cfg;
+    bool     temp_cfg_dirty;
+    node_temp_t temp;                /* the front end's latest */
+    uint16_t pwm_applied;
     /* state */
     uint8_t  address;               /* from the F-RAM; 0 = not set, never answers on RS-485 */
     bool     nv_fault;              /* the address F-RAM did not answer at start-up */
@@ -149,7 +166,7 @@ typedef struct {
     bool     boot_pending; uint32_t boot_at_ms;
     /* identification */
     uint16_t magic, map_version, hw_rev, fw_version, fw_build, uid[6];
-    uint16_t n_out_a, n_out_b, n_relays, n_inputs;
+    uint16_t n_out_a, n_out_b, n_relays, n_inputs, n_temp_pwm;
     /* statistics */
     uint32_t frames, replies, writes0;
     uint32_t act_pulses;            /* valid frames addressed to this node */

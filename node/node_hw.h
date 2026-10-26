@@ -34,6 +34,21 @@ typedef struct {
     bool    chip_fault;  /* the chip reports an internal fault */
 } node_in_t;
 
+/* map 2: the temperature front end's settings (registers 96..104) and readings (80..92, 30, 31) */
+typedef struct {
+    uint8_t  type[3];        /* IOB_TT_* per connector */
+    uint16_t ntc_r25[3];     /* an NTC's resistance at 25 degC, 10 ohm units */
+    uint16_t ntc_beta[3];    /* K */
+} node_temp_cfg_t;
+
+typedef struct {
+    int16_t  t[6];           /* 0.1 degC, IOB_TEMP_INVALID without a reading */
+    uint8_t  st[6];          /* IOB_TS_* */
+    int16_t  cj;             /* cold junction, 0.1 degC */
+    uint16_t flags;          /* IOB_TF_* */
+    uint16_t count;          /* finished measurement rounds */
+} node_temp_t;
+
 typedef struct node_hw {
     void *ctx;
     /* bank A (SPI). config: mode, open-load detection per channel; written and read back. */
@@ -55,6 +70,14 @@ typedef struct node_hw {
     int  (*addr_store)(void *ctx, uint8_t address);
     /* the board's serial number in the F-RAM (FW-62): 16 bytes, written and read back; NODE_HW_* */
     int  (*serial_store)(void *ctx, const uint8_t serial[16]);
+    /* map 2, each NULL when the board has none (IOB_R_N_TEMP_PWM then reads 0 for it).
+     * temp_poll is called every pass: it measures in the background (one round of conversions
+     * takes about a second) and keeps *t up to date. */
+    void (*temp_config)(void *ctx, const node_temp_cfg_t *c);
+    void (*temp_poll)(void *ctx, uint32_t now_ms, node_temp_t *t);
+    /* pump PWM: duty 0..1000 (0.1 %), frequency Hz, the DIR output. Behind the hardware gate. */
+    void (*pwm)(void *ctx, uint16_t duty, uint16_t freq_hz, bool dir);
+    uint32_t (*tach_period_us)(void *ctx);                 /* the last full tacho period; 0 = no edge for 2 s */
 } node_hw_t;
 
 #endif

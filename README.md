@@ -1,9 +1,16 @@
 # iob-node: CEMS I/O board node firmware
 
-Firmware for the CEMS Supervisor I/O board's own controller (STM32G0B1CET6): a Modbus RTU slave on
-RS-485 that drives 8 outputs of 0.6 A (bank A, ISO2H823V2.5), 8 outputs of 1 A (bank B, ISO808A-1)
-and 2 relays, reads 8 isolated inputs (ISO1I813T), and turns everything off by itself when the main
-board goes quiet.
+Firmware for the CEMS Supervisor I/O board's own controller: a Modbus slave that drives 8 outputs of
+0.6 A (bank A, ISO2H823V2.5), 8 outputs of 1 A (bank B, ISO808A-1) and 2 relays, reads 8 isolated
+inputs (ISO1I813T), and turns everything off by itself when the main board goes quiet.
+
+**24 Oct 2026 (Gary): the board moves to the STM32H563 (H563RGT6 + LAN8742A) and Ethernet with
+Modbus TCP replaces the RS-485 pair** (the platform's D27). The H5 is the standard for all
+development; the NUCLEO-H563ZI bench port (`port/nucleo_h563`) runs it today, Ethernet included.
+The core is unchanged: `node/node_net.c` turns Modbus TCP into the RTU frames `node.c` handles
+and answers the supervisor's discovery, so the board's IP is set from the supervisor's HTTPS page
+(see "Ethernet" below). `port/stm32g0` is the earlier G0B1 + RS-485 design, kept until the
+product's H563 port replaces it.
 
 **The contract** is *CEMS I/O Module Requirements: Firmware and Hardware* (FW-nn, HW-nn, AT-nn
 below). Register numbers and bits come from the platform's `platform/include/iobus.h`, and the CRC
@@ -16,14 +23,29 @@ reference this firmware is compared against byte for byte.
 | Path | What |
 |---|---|
 | `node/node.c`, `node.h` | The core: register map, Modbus slave (functions 03, 04, 06, 16, 23), write rules, hold time, gate, HEALTHY condition, chip health, USB rules. Pure C, no hardware. |
+| `node/node_net.c`, `node_net.h` | Ethernet: the Modbus TCP server (frames into `node_frame` on the master port) and the discovery responder (FIND, SET of IP settings and address), per the platform's `iob_net.h`. Pure C. |
 | `node/node_hw.h` | What the core needs from the board: the three chips, bank B's status pins and the relays. |
 | `drivers/` | Chip drivers, written and checked against the three datasheets (see "Chip drivers"). |
 | `port/stm32g0/` | STM32G0B1: main loop, RS-485 USART, USB virtual COM port, address F-RAM (I2C), straps, unique ID, reset cause, watchdog, bootloader entry. `CUBEMX_SETUP.md` makes the CubeIDE project. |
+| `port/nucleo_h563/` | A NUCLEO-H563ZI as a bench stand-in for the board: the same node core on GPIO pins, Ethernet through the Nucleo's LAN8742A (lwIP without an OS: `net_bench.c`, `lwip/eth_h5.c`), RS-485 through a transceiver module, the ST-LINK port as the USB port (`CUBEMX_SETUP.md` there) |
 | `tools/at02.py` | AT-02 conformance test for a real board, from a PC (below). |
 | `tools/at13.py` | AT-13 digital input bench test, from a PC (below). |
 | `tools/set_address.py` | Read or set a board's address over its USB-C port (FW-60, below). |
 | `drivers/nvcfg.c` | The address record in the board's F-RAM: two copies, CRC, sequence number. |
 | `tests/` | Host tests (below). `tests/platform/iob_node_real.c` puts this firmware in place of the platform's simulated node. |
+
+## Ethernet
+
+The supervisor talks to the board over Modbus TCP, port 502, unit id = the board's address; every
+RS-485 rule (addresses, write rules, hold time, comms watchdog, input changes) holds unchanged,
+because `node_net.c` hands each frame to `node_frame` on the master port. One connection at a
+time (a new one replaces the old). A new board has no IP: it serves no Modbus TCP but answers
+discovery on UDP 50223, so the supervisor's web page (Administration → I/O boards on the network)
+lists it with its chip ID and MAC and gives it a board slot's IP and address. The board saves them
+(F-RAM on the product, backup registers on the bench), reads them back, answers with them and
+changes over. From then on it takes settings and connections only from that supervisor's IP.
+Setting the address to 0 over USB (`set_address.py --clear`) also clears the IP: a new board again.
+The MAC is 02:xx:.. from the chip's unique ID unless an EUI-48 chip is fitted.
 
 ## Building and testing
 
@@ -31,7 +53,10 @@ reference this firmware is compared against byte for byte.
 make test          # host: requirement tests, 200,000 random frames compared with iob_node_sim.c, the chip drivers against frame-level chip models
 make master-test   # the platform's whole host suite with every simulated I/O board replaced by this firmware
 make target        # arm-none-eabi-gcc: compile and link for the STM32G0B1 against ST's HAL headers
+make bench         # the NUCLEO-H563ZI bench board build, compile and link (port/nucleo_h563)
 make vnode         # a virtual board on a pseudo-terminal, for trying tools/at02.py and at13.py (Linux/macOS)
+make vnode_net     # a virtual board on Ethernet (real sockets), the real core and node_net.c
+make net-e2e       # the supervisor's netsim finds that board, gives it board 1's IP over HTTPS and runs it over Modbus TCP
 ```
 
 `make target` needs `..\ext` with the xPack arm-none-eabi-gcc 13.3.1 and ST's
@@ -108,7 +133,7 @@ Each driver's header comment cites the datasheet sections it follows.
 
 | Chip | Datasheet | Driver | What it does |
 |---|---|---|---|
-| ISO2H823V2.5 (bank A) | Rev 2.1, 2024-11-01 | `drv_iso2h823.c` | SPI mode 3 of the chip: 24-bit frames with CRC-5 both ways. Config: version check (GLERR 0100b), power-up flags read away, DIAGCFG FFh, GLCFG LEDGOFF (+OLOFF if no channel is checked), all read back. DRIVE written every 1 ms pass. Every 5 ms: COLDIAG, then DIAGx of flagged channels, GLERR, INTERR. |
+| ISO2H823V2.5 (bank A) | Rev 2.1, 2024-11-01 | `drv_iso2h823.c` | SPI mode 3 of the chip: 24-bit frames with CRC-5 both ways. Config: version check (GLERR 0100b), power-up flags read away, DIAGCFG FFh, GLCFG 0 (LEDGOFF clear: the board's per-channel LEDs are the chip's LED matrix; OLOFF if no channel is checked), all read back. DRIVE written every 1 ms pass. Every 5 ms: COLDIAG, then DIAGx of flagged channels, GLERR, INTERR. |
 | ISO1I813T (inputs) | V2.2, 2017-01-03 | `drv_iso1i813t.c` | SPI mode 3 of the chip, same frame and CRC. Config: 8 COEFIL registers (filter + wire-break mask), read back. Every 2 ms: DIAG (the reply also carries the inputs and UV), INTERR. |
 | ISO808A-1 (bank B) | DS14170 Rev 6, July 2025 | `drv_iso808.c` | One 8-bit frame of output states every 1 ms pass, SS high 20 us after it. FAULT and PGOOD pins. Nothing to service: the chip's watchdog is internal. |
 
@@ -216,6 +241,28 @@ With healthy chips the two are byte-identical. They differ where the simulator h
 4. RX_ERRORS counts RS-485 errors only, not bad USB frames.
 5. The USB port (247, exception 04, register 37) is not in the simulator.
 
+## Temperature inputs and the pump (register map 2)
+
+The H563 board rev A adds three universal temperature connectors (TI ADS124S08 behind an ISOW7741,
+`drivers/drv_ads124s08.c`) and one PWM output with direction and tach (`drivers/pump.c`), from the
+review of the legacy dryer slave. The node reports `IOB_MAP_VERSION` 2; the registers are in the
+platform's `iobus.h` and its PLATFORM.md 5k. Connector c gives channels 2c-1 (A) and 2c (B): two
+thermocouples (K, J, T, E, S), or one RTD (PT100/PT1000, 2-, 3- or 4-wire) or one NTC on A. The node
+converts to 0.1 degC (NIST ITS-90 thermocouple polynomials generated by `tools/gen_tc_nist.py`, IEC 60751
+for RTDs, the beta equation for NTCs: `drivers/temp_conv.c`) and reports a state per channel; the
+supervisor applies the per-channel calibration. The cold junction is the ADC's internal temperature
+sensor. The PWM is 0 unless the safe-state gate is open, like every other output, and stops with
+the rest on the hold timeout. Builds without the hardware (`NODE_TEMP_PWM` 0, the G0 port) report
+0 temperature channels and 0 PWM outputs, and the supervisor treats them as before.
+
+**`ADS124S08_CONFIRMED` is 0**: the register layout was cross-checked against the Zephyr ads1x4s0x
+driver, but the SYS register fields, the data CRC (CRC-8 0x07, seed 0xFF), the internal sensor
+(129 mV at 25 degC, 403 uV/degC), the burn-out current code and the conversion times are from memory
+of datasheet SBAS660. Check them against a copy, then set it to 1; until then the driver does
+nothing and every configured channel reads ADC failed, and a product build stops with `#error`.
+Host tests build it with the macro at 1 against a frame-level model of the chip
+(`tests/sim_ads124s08.c`, `tests/test_temp.c`).
+
 ## Decisions made here (change any of them)
 
 | # | Decision |
@@ -241,3 +288,7 @@ With healthy chips the two are byte-identical. They differ where the simulator h
 5. The RS-485 RX pin needs a pull-up (on the board or the pin's own).
 6. ISO2H823 datasheet inconsistency: GLERR.MV is "1 = no missing voltage" in table 5.1.4 but "1 =
    missing" in 3.2.3 and the reset value; the driver does not use MV (UV at 16 V trips first).
+7. ADS124S08 constants against datasheet SBAS660 (above), then `ADS124S08_CONFIRMED` 1. On the
+   bench: thermocouple burn-out threshold (0.98 of full scale), the 10M bias on AIN7/9/11, the
+   PT100/PT1000/NTC excitation currents against the 5.11k reference, the tach input.
+8. NTC accuracy rests on the supervisor's per-channel offset and span (no IDAC self-calibration).

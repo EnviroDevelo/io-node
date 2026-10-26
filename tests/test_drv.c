@@ -31,14 +31,14 @@ static void t_iso2h823(void)
 {
     node_a_diag_t d;
     sim_chips_reset();
-    /* configuration: version checked, power-up flags cleared, LEDG off, OL on, all diagnostics on */
+    /* configuration: version checked, power-up flags cleared, LED matrix on, OL on, all diagnostics on */
     CHECK_EQ(iso2h823_config(0, 0xFF), NODE_HW_OK);
-    CHECK_EQ(sa.glcfg, 0x04);
+    CHECK_EQ(sa.glcfg, 0x00);                                  /* LEDGOFF clear: the channel LEDs work */
     CHECK_EQ(sa.diagcfg, 0xFF);
     CHECK_EQ(sa.wrong_mode + sa.wrong_len + sa.bad_crc_in, 0);
     CHECK(hp.delay_us >= 2u * sa.frames);                        /* /CS high between frames */
     CHECK_EQ(iso2h823_config(0, 0x00), NODE_HW_OK);             /* no channel checked: OLOFF */
-    CHECK_EQ(sa.glcfg, 0x06);
+    CHECK_EQ(sa.glcfg, 0x02);
     CHECK_EQ(iso2h823_config(0, 0x01), NODE_HW_OK);
     /* healthy after configuration (power-up UV, TE, W4P were read away) */
     CHECK_EQ(iso2h823_diag(0, &d), NODE_HW_OK);

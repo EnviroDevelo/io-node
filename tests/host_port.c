@@ -32,3 +32,8 @@ int port_fram_write(uint8_t off, const uint8_t *buf, uint8_t n)
     for (unsigned i = 0; i < k; i++) hp.fram[(uint8_t)(off + i)] = buf[i];
     return k == n ? 0 : -1;
 }
+
+bool port_temp_supply_ok(void) { return !hp.temp_supply_bad && !hp.temp_off; }
+void port_temp_enable(bool on) { if (!on && !hp.temp_off) hp.temp_cycles++; hp.temp_off = !on; }
+void port_pwm(uint16_t duty, uint16_t hz, bool dir) { hp.pwm_duty = duty; hp.pwm_hz = hz; hp.pwm_dir = dir; }
+uint32_t port_tach_period_us(void) { return hp.tach_us; }

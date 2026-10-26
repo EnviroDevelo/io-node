@@ -79,6 +79,8 @@ static void apply_outputs(node_t *n)
     uint8_t a = on ? (uint8_t)n->out_cmd : 0u;
     uint8_t b = on ? (uint8_t)(n->out_cmd >> 8) : 0u;
     uint8_t r = on ? (uint8_t)(n->relay_cmd & 3u) : 0u;
+    n->pwm_applied = on ? n->pwm_cmd : 0u;
+    if (n->hw->pwm) n->hw->pwm(n->hw->ctx, n->pwm_applied, n->pwm_hz, on && (n->pwm_dir & 1u));
     /* always written, even to a chip marked faulty: "off" should reach it if it can hear */
     if (n->hw->a_write(n->hw->ctx, a) != NODE_HW_OK && n->chip_a.configured && n->chip_a.fails < 255u)
         n->chip_a.fails++;
@@ -175,6 +177,15 @@ void node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t
     n->filter_ms = NODE_DEF_FILTER;
     n->wb_en = NODE_DEF_WB;
     n->ol_en = NODE_DEF_OL;
+    n->pwm_hz = NODE_DEF_PWM_HZ;
+    n->tach_ppr = NODE_DEF_PPR;
+    for (unsigned k = 0; k < IOB_TEMP_CONNS; k++) {
+        n->temp_cfg.ntc_r25[k] = NODE_DEF_NTC_R25;
+        n->temp_cfg.ntc_beta[k] = NODE_DEF_NTC_BETA;
+    }
+    for (unsigned k = 0; k < IOB_TEMPS; k++) { n->temp.t[k] = IOB_TEMP_INVALID; n->temp.st[k] = IOB_TS_OFF; }
+    n->temp.cj = IOB_TEMP_INVALID;
+    n->temp_cfg_dirty = true;
     n->config_needed = true;
     n->gate = false;                                                       /* FW-01 */
     n->last_write_ms = now;
@@ -186,6 +197,7 @@ void node_init(node_t *n, const node_hw_t *hw, const node_boot_t *boot, uint32_t
     n->n_out_b = NODE_N_OUT_B;
     n->n_relays = NODE_N_RELAYS;
     n->n_inputs = NODE_N_INPUTS;
+    n->n_temp_pwm = (uint16_t)((hw->temp_poll ? IOB_TEMPS : 0u) | (hw->pwm ? 1u << 8 : 0u));
     n->chip_a.retry_ms = n->chip_in.retry_ms = now;
     n->b_fault_since = now;
     hw->b_write(hw->ctx, 0);
@@ -213,11 +225,29 @@ void node_poll(node_t *n, uint32_t now)
     comms_check(n, now);
     service_chips(n, now);
     in_track(n);
+    if (n->hw->temp_poll) {
+        if (n->temp_cfg_dirty && n->hw->temp_config) n->hw->temp_config(n->hw->ctx, &n->temp_cfg);
+        n->temp_cfg_dirty = false;
+        n->hw->temp_poll(n->hw->ctx, now, &n->temp);
+    }
     apply_outputs(n);                       /* every pass: also rewrites bank A after any glitch */
     if (n->gate && !n->boot_pending) n->hw->b_wdg_service(n->hw->ctx);    /* FW-24 */
 }
 
 /* ---------------- registers ---------------- */
+
+static bool has_temp(const node_t *n) { return n->hw->temp_poll != 0; }
+static bool has_pwm(const node_t *n) { return n->hw->pwm != 0; }
+
+/* pump speed from the tacho period: 0 without pulses */
+static uint16_t tach_rpm(const node_t *n)
+{
+    if (!n->hw->tach_period_us) return 0;
+    uint32_t p = n->hw->tach_period_us(n->hw->ctx);
+    if (p == 0) return 0;
+    uint64_t rpm = (60000000ull + (uint64_t)p * n->tach_ppr / 2u) / ((uint64_t)p * n->tach_ppr);
+    return rpm > 0xFFFFu ? 0xFFFFu : (uint16_t)rpm;
+}
 
 uint16_t node_reg(const node_t *n, uint16_t r)
 {
@@ -262,7 +292,24 @@ uint16_t node_reg(const node_t *n, uint16_t r)
     case IOB_R_N_RELAYS: return n->n_relays;
     case IOB_R_N_INPUTS: return n->n_inputs;
     case IOB_R_NODE_ADDR: return n->address;
+    case IOB_R_N_TEMP_PWM: return n->n_temp_pwm;
+    case IOB_R_PWM_CMD: return n->pwm_cmd;
+    case IOB_R_PWM_DIR: return n->pwm_dir;
+    case IOB_R_PWM_APPLIED: return n->pwm_applied;
+    case IOB_R_TACH_RPM: return has_pwm(n) ? tach_rpm(n) : 0u;
+    case IOB_R_TEMP_FLAGS: return has_temp(n) ? n->temp.flags : 0u;
+    case IOB_R_TEMP_COUNT: return has_temp(n) ? n->temp.count : 0u;
+    case IOB_R_CJ_TEMP: return (uint16_t)(has_temp(n) ? n->temp.cj : IOB_TEMP_INVALID);
+    case IOB_R_PWM_FREQ: return n->pwm_hz;
+    case IOB_R_TACH_PPR: return n->tach_ppr;
     default:
+        if (r >= IOB_R_TEMP && r < IOB_R_TEMP + IOB_TEMPS)
+            return (uint16_t)(has_temp(n) ? n->temp.t[r - IOB_R_TEMP] : IOB_TEMP_INVALID);
+        if (r >= IOB_R_TEMP_STATE && r < IOB_R_TEMP_STATE + IOB_TEMPS)
+            return has_temp(n) ? n->temp.st[r - IOB_R_TEMP_STATE] : IOB_TS_OFF;
+        if (r >= IOB_R_TEMP_TYPE && r < IOB_R_TEMP_TYPE + IOB_TEMP_CONNS) return n->temp_cfg.type[r - IOB_R_TEMP_TYPE];
+        if (r >= IOB_R_NTC_R25 && r < IOB_R_NTC_R25 + IOB_TEMP_CONNS) return n->temp_cfg.ntc_r25[r - IOB_R_NTC_R25];
+        if (r >= IOB_R_NTC_BETA && r < IOB_R_NTC_BETA + IOB_TEMP_CONNS) return n->temp_cfg.ntc_beta[r - IOB_R_NTC_BETA];
         if (r >= IOB_R_UID && r < IOB_R_UID + 6u) return n->uid[r - IOB_R_UID];
         if (r >= IOB_R_SERIAL && r < IOB_R_SERIAL + IOB_SERIAL_REGS)
             return (uint16_t)(n->serial[2u * (r - IOB_R_SERIAL)] << 8 | n->serial[2u * (r - IOB_R_SERIAL) + 1u]);
@@ -270,11 +317,29 @@ uint16_t node_reg(const node_t *n, uint16_t r)
     }
 }
 
-static bool writable(uint16_t r) { return r <= IOB_R_CMD_SEQ || (r >= IOB_R_HOLD_DS && r <= IOB_R_FAULT_CLEAR); }
+static bool writable(const node_t *n, uint16_t r)
+{
+    return r <= IOB_R_CMD_SEQ || (r >= IOB_R_HOLD_DS && r <= IOB_R_FAULT_CLEAR) ||
+           (has_pwm(n) && (r == IOB_R_PWM_CMD || r == IOB_R_PWM_DIR || r == IOB_R_PWM_FREQ || r == IOB_R_TACH_PPR)) ||
+           (has_temp(n) && r >= IOB_R_TEMP_TYPE && r < IOB_R_NTC_BETA + IOB_TEMP_CONNS);
+}
+
+static bool temp_type_ok(uint16_t t)
+{
+    return t == IOB_TT_NONE || (t >= IOB_TT_TC_K && t <= IOB_TT_TC_S) || (t >= IOB_TT_PT100_2W && t <= IOB_TT_PT1000_4W) ||
+           t == IOB_TT_NTC;
+}
 
 static bool value_ok(uint16_t r, uint16_t v)
 {
+    if (r >= IOB_R_TEMP_TYPE && r < IOB_R_TEMP_TYPE + IOB_TEMP_CONNS) return temp_type_ok(v);
+    if (r >= IOB_R_NTC_R25 && r < IOB_R_NTC_R25 + IOB_TEMP_CONNS) return v >= 10u;
+    if (r >= IOB_R_NTC_BETA && r < IOB_R_NTC_BETA + IOB_TEMP_CONNS) return v >= 1000u && v <= 10000u;
     switch (r) {
+    case IOB_R_PWM_CMD: return v <= 1000u;
+    case IOB_R_PWM_DIR: return v <= 1u;
+    case IOB_R_PWM_FREQ: return v >= 10u && v <= 25000u;
+    case IOB_R_TACH_PPR: return v >= 1u && v <= 12u;
     case IOB_R_RELAY_CMD: return v <= 3u;
     case IOB_R_HOLD_DS: return v >= 1u && v <= 6000u;
     case IOB_R_FILTER_MS: return v <= 100u;
@@ -304,9 +369,9 @@ static uint8_t write_check(const node_t *n, node_port_t port, uint32_t now, uint
             touches_addr = true;
             continue;
         }
-        if (!writable(r)) return 2;
+        if (!writable(n, r)) return 2;
         if (!value_ok(r, v)) return 3;
-        if (r <= IOB_R_CMD_SEQ) touches_cmd = true;
+        if (r <= IOB_R_PWM_DIR) touches_cmd = true;
     }
     if (port == NODE_PORT_USB && (touches_cmd || touches_addr) && node_master_in_control(n, now)) return 4;   /* FW-56 */
     return 0;
@@ -342,6 +407,10 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
         case IOB_R_OL_ENABLE:
             if (v != n->ol_en) n->cfg_a_dirty = true;
             n->ol_en = v; n->config_needed = false; break;
+        case IOB_R_PWM_CMD: n->pwm_cmd = v; break;
+        case IOB_R_PWM_DIR: n->pwm_dir = v; break;
+        case IOB_R_PWM_FREQ: n->pwm_hz = v; break;
+        case IOB_R_TACH_PPR: n->tach_ppr = v; break;
         case IOB_R_FAULT_CLEAR:                                               /* FW-44 */
             if (v & 1u) { n->timeout_latched = false; n->wdg_latched = false; }
             if (v & 2u) n->comms_lost = false;                                /* FW-58 */
@@ -351,7 +420,17 @@ static void write_apply(node_t *n, node_port_t port, uint32_t now, uint16_t star
             n->boot_pending = true;
             n->boot_at_ms = now + NODE_BOOT_DELAY_MS;
             break;
-        default: break;
+        default: {
+            uint16_t *p = 0;
+            if (r >= IOB_R_TEMP_TYPE && r < IOB_R_TEMP_TYPE + IOB_TEMP_CONNS) {
+                uint8_t *t = &n->temp_cfg.type[r - IOB_R_TEMP_TYPE];
+                if (*t != v) n->temp_cfg_dirty = true;
+                *t = (uint8_t)v;
+            } else if (r >= IOB_R_NTC_R25 && r < IOB_R_NTC_R25 + IOB_TEMP_CONNS) p = &n->temp_cfg.ntc_r25[r - IOB_R_NTC_R25];
+            else if (r >= IOB_R_NTC_BETA && r < IOB_R_NTC_BETA + IOB_TEMP_CONNS) p = &n->temp_cfg.ntc_beta[r - IOB_R_NTC_BETA];
+            if (p) { if (*p != v) n->temp_cfg_dirty = true; *p = v; }
+            break;
+        }
         }
     }
     if (w0) {

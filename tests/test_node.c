@@ -79,11 +79,21 @@ static void t_startup(void)       /* FW-01, FW-02, FW-03, FW-04, FW-51, FW-52 */
     /* reserved addresses read 0 */
     CHECK_EQ(rd(RS, 3, 0, 80), MBR_OK);
     for (int r = 0; r < 80; r++)
-        if ((r > 2 && r < 16) || (r > 27 && r < 32) || (r > 38 && r < 64) || r == 79) CHECK_EQ(regs[r], 0);
+        if ((r > 2 && r < 16) || (r > 27 && r < 32) || (r > 38 && r < 64)) CHECK_EQ(regs[r], 0);   /* map 2's start 0 */
     CHECK_EQ(regs[IOB_R_NODE_ADDR], 3);                         /* FW-60 */
+    CHECK_EQ(regs[IOB_R_N_TEMP_PWM], IOB_TEMPS | 1u << 8);
+    /* map 2: no sensor configured yet, defaults */
+    CHECK_EQ(rd(RS, 3, IOB_R_TEMP, 27), MBR_OK);
+    for (int i = 0; i < 6; i++) { CHECK_EQ((int16_t)regs[i], IOB_TEMP_INVALID); CHECK_EQ(regs[6 + i], IOB_TS_OFF); }
+    CHECK_EQ((int16_t)regs[IOB_R_CJ_TEMP - IOB_R_TEMP], IOB_TEMP_INVALID);
+    CHECK_EQ(regs[IOB_R_TEMP_TYPE - IOB_R_TEMP], IOB_TT_NONE);
+    CHECK_EQ(regs[IOB_R_NTC_R25 - IOB_R_TEMP], 1000); CHECK_EQ(regs[IOB_R_NTC_BETA + 2 - IOB_R_TEMP], 3435);
+    CHECK_EQ(regs[IOB_R_PWM_FREQ - IOB_R_TEMP], 1000); CHECK_EQ(regs[IOB_R_TACH_PPR - IOB_R_TEMP], 2);
+
     /* nothing switches on, however long it runs, until the master writes register 0 */
     run(500);
     CHECK(!node_healthy(&n)); CHECK_EQ(hw.a_out | hw.b_out | hw.relays, 0);
+    CHECK_EQ(hw.temp_configs, 1); CHECK(hw.temp_polls >= 500u); CHECK_EQ(hw.pwm_duty, 0); CHECK(!hw.pwm_dir);
     CHECK_EQ(hw.b_services, 0);
     /* watchdog reset and the reset count (FW-03) */
     sim_hw_init(&hw);
@@ -211,11 +221,11 @@ static void t_rules(void)         /* section 5 exceptions, FW-12, FW-02 */
     CHECK(!node_healthy(&n)); CHECK_EQ(reg(IOB_R_OUT_CMD), 0); CHECK_EQ(reg(IOB_R_CMD_SEQ), 0);
     /* a write spanning a writable and a read-only register */
     uint16_t two[2] = { 1, 1 };
-    CHECK_EQ(wrn(RS, 5, IOB_R_CMD_SEQ, two, 2), MBR_EXCEPTION); CHECK_EQ(exc, 2);
-    CHECK_EQ(reg(IOB_R_CMD_SEQ), 0);
-    /* addresses past 79: 02; counts of 0 or too many: 03 */
-    CHECK_EQ(rd(RS, 5, 79, 2), MBR_EXCEPTION); CHECK_EQ(exc, 2);
-    CHECK_EQ(rd(RS, 5, 79, 1), MBR_OK);
+    CHECK_EQ(wrn(RS, 5, IOB_R_PWM_DIR, two, 2), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(reg(IOB_R_PWM_DIR), 0);
+    /* addresses past 106: 02; counts of 0 or too many: 03 */
+    CHECK_EQ(rd(RS, 5, 106, 2), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(rd(RS, 5, 106, 1), MBR_OK);
     f[0] = 5; f[1] = 3; f[2] = 0; f[3] = 0; f[4] = 0; f[5] = 0;
     uint16_t c = mbr_crc16(f, 6); f[6] = (uint8_t)c; f[7] = (uint8_t)(c >> 8);
     CHECK_EQ(xfer(RS, f, 8, 0), MBR_EXCEPTION); CHECK_EQ(exc, 3);
@@ -565,7 +575,7 @@ static void t_inputs_hold(void)
     hw.inputs = 0x00; run(4); hw.inputs = 0x80; run(4);
     CHECK_EQ(rd(RS, 3, IOB_R_STATUS, 1), MBR_OK);
     CHECK_EQ(rd(RS, 3, IOB_R_OUT_APPLIED, 2), MBR_OK);
-    CHECK_EQ(rd(RS, 3, IOB_R_INPUTS, 70), MBR_EXCEPTION);
+    CHECK_EQ(rd(RS, 3, IOB_R_INPUTS, 95), MBR_EXCEPTION);
     CHECK_EQ(rd(NODE_PORT_USB, NODE_USB_ADDRESS, IOB_R_INPUTS, 1), MBR_OK);
     CHECK_EQ(regs[0], 0x80);                                    /* USB: as they are now */
     CHECK_EQ(rs_inputs(), 0x00);
@@ -787,6 +797,91 @@ static void t_serial(void)
     hw.serial_store_rc = NODE_HW_OK;
 }
 
+/* map 2: the pump PWM is an output like the others; temperatures and their settings */
+static int rw5(uint8_t addr, uint16_t out, uint16_t seq, uint16_t pwm, uint16_t dir)
+{
+    uint8_t f[MBR_FRAME_MAX];
+    uint16_t w[5] = { out, 0, seq, pwm, dir };
+    size_t len = mbr_req_rw(f, addr, IOB_R_STATUS, IOB_R_STATUS_N2, IOB_R_OUT_CMD, w, 5);
+    return xfer(RS, f, len, IOB_R_STATUS_N2);
+}
+
+static void t_map2(void)
+{
+    sim_hw_init(&hw);
+    boot(4, NODE_RST_POWER_ON, 0);
+    run(2);
+    /* the PWM follows only while the gate is open */
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_CMD, 600), MBR_OK);
+    run(2);
+    CHECK_EQ(hw.pwm_duty, 0); CHECK_EQ(reg(IOB_R_PWM_APPLIED), 0);
+    CHECK_EQ(rw5(4, 0, 1, 600, 1), MBR_OK);
+    CHECK_EQ(regs[IOB_R_PWM_APPLIED - IOB_R_STATUS], 600);        /* applied before the reply */
+    CHECK_EQ(hw.pwm_duty, 600); CHECK(hw.pwm_dir); CHECK_EQ(hw.pwm_hz, 1000);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_CMD, 1001), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_DIR, 2), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_FREQ, 9), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_TACH_PPR, 13), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    uint16_t pc[2] = { 25000, 4 };
+    CHECK_EQ(wrn(RS, 4, IOB_R_PWM_FREQ, pc, 2), MBR_OK);
+    run(1);
+    CHECK_EQ(hw.pwm_hz, 25000);
+    /* USB may not drive the pump while the master is in control (FW-56) */
+    CHECK_EQ(wr1(USB, NODE_USB_ADDRESS, IOB_R_PWM_CMD, 10), MBR_EXCEPTION); CHECK_EQ(exc, 4);
+    /* tacho: 50 Hz at 4 pulses per revolution = 750 rpm */
+    hw.tach_us = 20000;
+    CHECK_EQ(reg(IOB_R_TACH_RPM), 750);
+    hw.tach_us = 0;
+    CHECK_EQ(reg(IOB_R_TACH_RPM), 0);
+    /* a PWM write alone does not restart the hold time: the pump stops with everything else */
+    CHECK_EQ(wr1(RS, 4, IOB_R_HOLD_DS, 10), MBR_OK);
+    CHECK_EQ(rw5(4, 0, 2, 700, 0), MBR_OK);
+    run(500);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_CMD, 800), MBR_OK);
+    run(501);
+    CHECK_EQ(hw.pwm_duty, 0); CHECK(!hw.pwm_dir); CHECK(reg(IOB_R_STATUS) & IOB_ST_TIMEOUT);
+    CHECK_EQ(reg(IOB_R_PWM_APPLIED), 0); CHECK_EQ(reg(IOB_R_PWM_CMD), 800);
+
+    /* temperatures: the settings reach the front end, its readings the registers */
+    uint16_t tc[9] = { IOB_TT_TC_K, IOB_TT_PT100_4W, IOB_TT_NTC, 1000, 1000, 270, 3435, 3435, 3950 };
+    CHECK_EQ(wrn(RS, 4, IOB_R_TEMP_TYPE, tc, 9), MBR_OK);
+    run(1);
+    CHECK_EQ(hw.temp_cfg.type[0], IOB_TT_TC_K); CHECK_EQ(hw.temp_cfg.type[2], IOB_TT_NTC);
+    CHECK_EQ(hw.temp_cfg.ntc_r25[2], 270); CHECK_EQ(hw.temp_cfg.ntc_beta[2], 3950);
+    uint32_t c0 = hw.temp_configs;
+    CHECK_EQ(wrn(RS, 4, IOB_R_TEMP_TYPE, tc, 9), MBR_OK);           /* the same again: no reconfiguration */
+    run(1);
+    CHECK_EQ(hw.temp_configs, c0);
+    uint16_t bad[3] = { IOB_TT_TC_S + 1, 0, 0 };
+    CHECK_EQ(wrn(RS, 4, IOB_R_TEMP_TYPE, bad, 3), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_NTC_BETA, 999), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_NTC_R25 + 1, 9), MBR_EXCEPTION); CHECK_EQ(exc, 3);
+    CHECK_EQ(wr1(RS, 4, IOB_R_TEMP, 1), MBR_EXCEPTION); CHECK_EQ(exc, 2);         /* readings are read-only */
+    hw.temp.t[0] = 2345; hw.temp.st[0] = IOB_TS_OK;
+    hw.temp.t[1] = IOB_TEMP_INVALID; hw.temp.st[1] = IOB_TS_OPEN;
+    hw.temp.t[2] = -1234; hw.temp.st[2] = IOB_TS_OK;
+    hw.temp.cj = 215; hw.temp.flags = IOB_TF_CJ; hw.temp.count = 9;
+    run(1);
+    CHECK_EQ(rd(RS, 4, IOB_R_TEMP, IOB_R_TEMPS_N), MBR_OK);
+    CHECK_EQ(regs[0], 2345); CHECK_EQ((int16_t)regs[1], IOB_TEMP_INVALID); CHECK_EQ((int16_t)regs[2], -1234);
+    CHECK_EQ(regs[6], IOB_TS_OK); CHECK_EQ(regs[7], IOB_TS_OPEN);
+    CHECK_EQ(regs[IOB_R_CJ_TEMP - IOB_R_TEMP], 215);
+    CHECK_EQ(reg(IOB_R_TEMP_FLAGS), IOB_TF_CJ); CHECK_EQ(reg(IOB_R_TEMP_COUNT), 9);
+
+    /* a board without them (the G0 board): map 2 registers are refused, readings read "none" */
+    sim_hw_init(&hw);
+    sim_hw_map1(&hw);
+    boot(4, NODE_RST_POWER_ON, 0);
+    run(2);
+    CHECK_EQ(reg(IOB_R_N_TEMP_PWM), 0);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_CMD, 1), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(wr1(RS, 4, IOB_R_TEMP_TYPE, IOB_TT_TC_K), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(wr1(RS, 4, IOB_R_PWM_FREQ, 100), MBR_EXCEPTION); CHECK_EQ(exc, 2);
+    CHECK_EQ(rw(RS, 4, 0x0001, 0, 1), MBR_OK);                     /* the map 1 cycle still works */
+    CHECK_EQ(rd(RS, 4, IOB_R_TEMP, 1), MBR_OK); CHECK_EQ((int16_t)regs[0], IOB_TEMP_INVALID);
+    CHECK_EQ(reg(IOB_R_TACH_RPM), 0);
+}
+
 void test_node(void)
 {
     t_startup();
@@ -801,4 +896,5 @@ void test_node(void)
     t_addr_set();
     t_commission();
     t_serial();
+    t_map2();
 }

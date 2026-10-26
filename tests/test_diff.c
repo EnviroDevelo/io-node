@@ -19,9 +19,10 @@ static uint32_t rnd(uint32_t n) { return (uint32_t)rand() % n; }
 /* a register address that is usually interesting */
 static uint16_t pick_reg(void)
 {
-    static const uint16_t hot[] = { 0, 1, 2, 16, 17, 18, 25, 26, 32, 33, 34, 35, 36, 37, 64, 69, 78, 79 };
+    static const uint16_t hot[] = { 0, 1, 2, 3, 4, 16, 17, 18, 25, 26, 28, 32, 33, 34, 35, 36, 37, 64, 69, 78, 79,
+                                    80, 96, 99, 102, 105, 106 };
     switch (rnd(4)) {
-    case 0: return (uint16_t)rnd(90);
+    case 0: return (uint16_t)rnd(115);
     default: return hot[rnd(sizeof hot / sizeof hot[0])];
     }
 }
